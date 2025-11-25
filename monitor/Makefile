@@ -19,7 +19,7 @@ PORT      = /dev/ttyACM0
 MOUNT_DEVICE = /dev/sdb1
 MOUNT_POINT  = /mnt/pico
 
-.PHONY: all run clean flash
+.PHONY: all run clean flash demo
 
 # --- Main Targets ---
 
@@ -66,3 +66,39 @@ build/v30_control.uf2: main.cpp CMakeLists.txt
 	mkdir -p build
 	cd build && cmake -DPICO_SDK_PATH=$(PICO_SDK_PATH) .. && make
 	@echo "--- Firmware build complete. ---"
+
+# --- Demo Target ---
+# Runs a sequence of monitor commands directly via serial port.
+# Does not load firmware.
+DEMO_PORT ?= /dev/ttyACM0
+DEMO_BAUD ?= 115200
+
+demo:
+	@echo ">>> Starting Demo Sequence on $(DEMO_PORT)"
+	@echo ">>> NOTE: If you get permission denied, run 'sudo chmod a+rw $(DEMO_PORT)'"
+	@bash -c '\
+		exec 3<>$(DEMO_PORT); \
+		stty -F $(DEMO_PORT) $(DEMO_BAUD) raw -echo; \
+		trap "kill $$CAT_PID 2>/dev/null; exec 3<&-" EXIT; \
+		cat <&3 & \
+		CAT_PID=$$!; \
+		sleep 2; \
+		echo -e "\r\na 100\r" >&3; \
+		sleep 0.3; echo -e "mov cx, 10\r" >&3; \
+		sleep 0.3; echo -e "mov ax, 1\r" >&3; \
+		sleep 0.3; echo -e "mov bx, 0\r" >&3; \
+		sleep 0.3; echo -e "add ax, bx\r" >&3; \
+		sleep 0.3; echo -e "xchg ax, bx\r" >&3; \
+		sleep 0.3; echo -e "loop 109\r" >&3; \
+		sleep 0.3; echo -e "mov [200], ax\r" >&3; \
+		sleep 0.3; echo -e "jmp 111\r" >&3; \
+		sleep 0.3; echo -e ".\r" >&3; \
+		sleep 0.3; echo -e "\r\nd 100 20\r" >&3; \
+		sleep 0.3; echo -e "\r\nl 100 20\r" >&3; \
+		sleep 0.5; echo -e "\r\ng\r" >&3; \
+		sleep 1; \
+		echo -e " \r" >&3; \
+		sleep 0.5; echo -e "\r\nd 200 2\r" >&3; \
+        sleep 2; \
+	'
+	@echo ">>> Demo Finished."

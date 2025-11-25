@@ -335,9 +335,153 @@ void cmd_edit(const char *arg_str) {
     printf("Updated.\n");
 }
 
-void cmd_disasm(const char *arg) {
-    printf("Disassembly not yet fully implemented.\n");
+// --- Assembler/Disassembler ---
+const char* const reg_names[] = {"ax", "cx", "dx", "bx", "sp", "bp", "si", "di"};
+
+int reg_to_code(const char* name) {
+    if (!name) return -1;
+    for (int i = 0; i < 8; i++) {
+        if (strcasecmp(name, reg_names[i]) == 0) return i;
+    }
+    return -1;
 }
+
+const char* code_to_reg(int code) {
+    if (code >= 0 && code < 8) return reg_names[code];
+    return "??";
+}
+
+int assemble_instruction(uint32_t addr, const char *arg_str) {
+    char args[256];
+    strncpy(args, arg_str, sizeof(args)-1);
+    args[sizeof(args)-1] = 0;
+
+    char* mnemonic = strtok(args, " ");
+    if (!mnemonic) { return 0; }
+
+    char* op1_str = strtok(NULL, ", ");
+    char* op2_str = strtok(NULL, ", ");
+    int bytes = 0;
+
+    if (strcasecmp(mnemonic, "nop") == 0) {
+        ram[map_address(addr)] = 0x90;
+        bytes = 1;
+    } else if (strcasecmp(mnemonic, "mov") == 0) {
+        int reg1 = reg_to_code(op1_str);
+        if (reg1 != -1 && op2_str) { // mov reg, imm
+            int imm = strtol(op2_str, NULL, 0);
+            ram[map_address(addr)] = 0xB8 + reg1;
+            ram[map_address(addr + 1)] = imm & 0xFF;
+            ram[map_address(addr + 2)] = imm >> 8;
+            bytes = 3;
+        } else if (op1_str[0] == '[' && op2_str && reg_to_code(op2_str) == 0) { // mov [imm], ax
+            int imm = strtol(op1_str + 1, NULL, 0);
+            ram[map_address(addr)] = 0xA3;
+            ram[map_address(addr + 1)] = imm & 0xFF;
+            ram[map_address(addr + 2)] = imm >> 8;
+            bytes = 3;
+        }
+    } else if (strcasecmp(mnemonic, "add") == 0) {
+        int reg1 = reg_to_code(op1_str);
+        int reg2 = reg_to_code(op2_str);
+        if (reg1 != -1 && reg2 != -1) {
+            ram[map_address(addr)] = 0x01;
+            ram[map_address(addr + 1)] = 0xC0 | (reg2 << 3) | reg1; // ModR/M
+            bytes = 2;
+        }
+    } else if (strcasecmp(mnemonic, "xchg") == 0) {
+        int reg1 = reg_to_code(op1_str);
+        int reg2 = reg_to_code(op2_str);
+        if (reg1 == 0 && reg2 != -1) { // xchg ax, reg
+            ram[map_address(addr)] = 0x90 + reg2;
+            bytes = 1;
+        } else if (reg2 == 0 && reg1 != -1) { // xchg reg, ax
+            ram[map_address(addr)] = 0x90 + reg1;
+            bytes = 1;
+        }
+    } else if (strcasecmp(mnemonic, "loop") == 0) {
+        uint32_t target = strtol(op1_str, NULL, 16);
+        int8_t offset = target - (addr + 2);
+        ram[map_address(addr)] = 0xE2;
+        ram[map_address(addr + 1)] = offset;
+        bytes = 2;
+    } else if (strcasecmp(mnemonic, "jmp") == 0) {
+        uint32_t target = strtol(op1_str, NULL, 16);
+        int8_t offset = target - (addr + 2);
+        ram[map_address(addr)] = 0xEB;
+        ram[map_address(addr + 1)] = offset;
+        bytes = 2;
+    }
+
+    if (bytes > 0) {
+        printf(" ->");
+        for(int i=0; i<bytes; i++) printf(" %02X", ram[map_address(addr+i)]);
+        printf("\n");
+        return bytes;
+    } else {
+        return 0;
+    }
+}
+
+
+void cmd_disasm(const char *arg_str) {
+    char args[128];
+    strncpy(args, arg_str, sizeof(args)-1);
+    args[sizeof(args)-1] = 0;
+    char *addr_str = strtok(args, " ");
+    char *len_str = strtok(NULL, " ");
+    uint32_t addr = addr_str ? strtol(addr_str, NULL, 16) : 0;
+    int len = len_str ? strtol(len_str, NULL, 10) : 16;
+
+    uint32_t pc = addr;
+    while (pc < addr + len) {
+        uint32_t current_pc = pc;
+        uint8_t opcode = ram[map_address(pc)];
+        int bytes = 1;
+        char disasm_str[128] = {0};
+        char hex_dump[32] = {0};
+
+        if (opcode == 0x90) {
+            sprintf(disasm_str, "nop");
+        } else if (opcode >= 0xB8 && opcode <= 0xBF) {
+            bytes = 3;
+            uint16_t imm = ram[map_address(pc + 1)] | (ram[map_address(pc + 2)] << 8);
+            sprintf(disasm_str, "mov %s, 0x%04X", code_to_reg(opcode - 0xB8), imm);
+        } else if (opcode == 0xA3) {
+            bytes = 3;
+            uint16_t mem_addr = ram[map_address(pc + 1)] | (ram[map_address(pc + 2)] << 8);
+            sprintf(disasm_str, "mov [0x%04X], ax", mem_addr);
+        } else if (opcode == 0x01) {
+            bytes = 2;
+            uint8_t modrm = ram[map_address(pc + 1)];
+            if ((modrm >> 6) == 3) { // reg, reg
+                int reg1 = modrm & 7;
+                int reg2 = (modrm >> 3) & 7;
+                sprintf(disasm_str, "add %s, %s", code_to_reg(reg1), code_to_reg(reg2));
+            }
+        } else if (opcode >= 0x91 && opcode <= 0x97) {
+            bytes = 1;
+            sprintf(disasm_str, "xchg ax, %s", code_to_reg(opcode - 0x90));
+        } else if (opcode == 0xE2) {
+            bytes = 2;
+            int8_t offset = ram[map_address(pc + 1)];
+            sprintf(disasm_str, "loop 0x%04lX", pc + 2 + offset);
+        } else if (opcode == 0xEB) {
+            bytes = 2;
+            int8_t offset = ram[map_address(pc + 1)];
+            sprintf(disasm_str, "jmp 0x%04lX", pc + 2 + offset);
+        } else {
+            sprintf(disasm_str, "db 0x%02X", opcode);
+        }
+        
+        char* p = hex_dump;
+        for(int i=0; i<bytes; i++) p += sprintf(p, "%02X ", ram[map_address(current_pc+i)]);
+
+        printf("%05lX: %-12s %s\n", current_pc, hex_dump, disasm_str);
+        pc += bytes;
+    }
+}
+
 
 // ==========================================
 //   Core 0: Main Monitor
@@ -369,16 +513,16 @@ int main() {
         line[pos] = 0;
         if (pos == 0) continue;
 
-        char cmd_line_copy[128];
+        char cmd_line_copy[256];
         strncpy(cmd_line_copy, line, sizeof(cmd_line_copy));
         
         char* cmd = strtok(cmd_line_copy, " ");
-        // FIX: Handle `strtok` modifying the string by using a copy for parsing args
         const char* args = pos > strlen(cmd) ? line + strlen(cmd) + 1 : "";
 
         if (strcmp(cmd, "?") == 0) {
             printf(" d <addr> [len] : Dump memory\n");
             printf(" e <addr> <val> : Edit memory\n");
+            printf(" a <addr>       : Assemble interactively\n");
             printf(" l <addr> [len] : Disassemble\n");
             printf(" r              : Run & Log\n");
             printf(" g              : Run Loop (Key stop)\n");
@@ -389,6 +533,47 @@ int main() {
             printf(" autotest       : Full auto test (Rx -> Run -> Tx Log)\n");
         } else if (strcmp(cmd, "d") == 0) cmd_dump(args);
         else if (strcmp(cmd, "e") == 0) cmd_edit(args);
+        else if (strcmp(cmd, "a") == 0) {
+            char args_copy[128];
+            strncpy(args_copy, args, sizeof(args_copy));
+            args_copy[sizeof(args_copy)-1] = 0;
+            char* addr_str = strtok(args_copy, " ");
+
+            if (!addr_str || strlen(addr_str) == 0) {
+                printf("Usage: a <addr>\n");
+                continue;
+            }
+            uint32_t current_addr = strtol(addr_str, NULL, 16);
+
+            while (true) {
+                printf("%05lX: ", current_addr);
+                char asm_line[128];
+                int asm_pos = 0;
+                while(asm_pos < 127) {
+                    int c = getchar();
+                    if (c == '\r' || c == '\n') { break; }
+                    if (c == 0x08 || c == 0x7F) { if(asm_pos > 0) { asm_pos--; printf("\b \b"); }}
+                    else if (isprint(c)) { asm_line[asm_pos++] = c; putchar(c); }
+                }
+                asm_line[asm_pos] = 0;
+
+                if (strcmp(asm_line, ".") == 0) {
+                    putchar('\n');
+                    break;
+                }
+                if (asm_pos == 0) {
+                    putchar('\n');
+                    continue;
+                }
+                
+                int bytes = assemble_instruction(current_addr, asm_line);
+                if (bytes > 0) {
+                    current_addr += bytes;
+                } else {
+                    printf("Error: Unknown instruction or invalid operands.\n");
+                }
+            }
+        }
         else if (strcmp(cmd, "l") == 0) cmd_disasm(args);
         else if (strcmp(cmd, "g") == 0) {
             printf("Running V30 (No Log). Press any key to stop...\n");
