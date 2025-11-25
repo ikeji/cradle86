@@ -12,9 +12,10 @@
 #include "hardware/gpio.h"
 #include "hardware/clocks.h"
 #include "hardware/structs/sio.h"
+#include "hardware/pwm.h" // Added for clock generation
 
 // --- Config ---
-#define VERSION_STR "1.0.1"
+#define VERSION_STR "1.0.2"
 #define RAM_SIZE    0x10000   // 64KB Virtual RAM
 #define MAX_CYCLES  5000      // Log buffer size
 
@@ -30,6 +31,9 @@
 #define PIN_SW      23
 #define PIN_LED     25
 #define PIN_A16     26 // A16-A19 are on GP26, 27, 28, 29
+#define PIN_A17     27
+#define PIN_A18     28
+#define PIN_A19     29
 
 // --- Data Structures ---
 // Use `packed` attribute to ensure 8-byte alignment for cross-platform compatibility
@@ -64,9 +68,8 @@ inline void set_ad_dir(bool output) {
 
 inline uint32_t read_addr() {
     uint32_t r = sio_hw->gpio_in;
-    uint32_t addr = r & 0xFFFF; // AD0-15 on GP0-15
-    // Read A16-A19 from GP26-29 and map them to bits 16-19
-    uint32_t high_addr_bits = (r >> PIN_A16) & 0b1111; // Extract 4 bits starting from GP26
+    uint32_t addr = r & 0xFFFF;
+    uint32_t high_addr_bits = (r >> PIN_A16) & 0b1111;
     addr |= (high_addr_bits << 16);
     return addr;
 }
@@ -81,7 +84,7 @@ inline uint16_t read_data() {
 }
 
 inline uint32_t map_address(uint32_t v30_addr) {
-    return v30_addr & (RAM_SIZE - 1); // Map 1MB to 64KB Loop
+    return v30_addr & (RAM_SIZE - 1);
 }
 
 // ==========================================
@@ -91,7 +94,6 @@ inline uint32_t map_address(uint32_t v30_addr) {
 #define CMD_FAST_RUN 2
 
 void core1_entry() {
-    // GPIO Init
     set_ad_dir(false);
     const uint32_t ctrl_mask = (1<<PIN_ALE)|(1<<PIN_RD)|(1<<PIN_WR)|(1<<PIN_IOM)|(1<<PIN_BHE);
     gpio_init_mask(ctrl_mask);
@@ -120,13 +122,13 @@ void core1_entry() {
 
             absolute_time_t t_start = get_absolute_time();
             bool ale_detected = false;
-            while (absolute_time_diff_us(t_start, get_absolute_time()) < 100000) { // 100ms timeout
+            while (absolute_time_diff_us(t_start, get_absolute_time()) < 100000) {
                 if (sio_hw->gpio_in & (1 << PIN_ALE)) {
                     ale_detected = true;
                     break;
                 }
             }
-            if (!ale_detected) break; // Timeout (HLT or crash)
+            if (!ale_detected) break;
 
             uint32_t addr = read_addr();
             bool is_io = (sio_hw->gpio_in & (1 << PIN_IOM));
@@ -165,7 +167,7 @@ void core1_entry() {
                     if (logging) trace_log[cycles] = {addr, in_data, (uint8_t)(is_io ? 3 : 1), 0};
                     done = true;
                 }
-                if (sio_hw->gpio_in & (1 << PIN_ALE)) break; // Cycle aborted
+                if (sio_hw->gpio_in & (1 << PIN_ALE)) break;
             }
             if(done) cycles++;
         }
@@ -232,18 +234,21 @@ void xmodem_send(uint8_t *src, int len) {
         for (int i=0; i<128; i++) _outbyte(buff[i]);
         uint16_t crc = crc16_ccitt(buff, 128);
         _outbyte(crc >> 8); _outbyte(crc & 0xFF);
-        if (_inbyte(5000) != ACK) { sent_len -= 128; } // Retry
+        if (_inbyte(5000) != ACK) { sent_len -= 128; }
         packetno++;
     }
-    _outbyte(EOT); _inbyte(2000); // Eat ACK
+    _outbyte(EOT); _inbyte(2000);
     printf("\nSend complete.\n");
 }
 
 // ==========================================
 //   Monitor Commands
 // ==========================================
-void cmd_dump(char *arg) {
-    char *addr_str = strtok(arg, " ");
+void cmd_dump(const char *arg_str) {
+    char args[128];
+    strncpy(args, arg_str, sizeof(args)-1);
+    args[sizeof(args)-1] = 0;
+    char *addr_str = strtok(args, " ");
     char *len_str = strtok(NULL, " ");
     uint32_t addr = addr_str ? strtol(addr_str, NULL, 16) : 0;
     int len = len_str ? strtol(len_str, NULL, 10) : 256;
@@ -257,9 +262,12 @@ void cmd_dump(char *arg) {
     }
 }
 
-void cmd_edit(char *arg) {
-    char *addr_str = strtok(arg, " ");
-    if (!addr_str) { printf("Usage: e <addr> <val> \n"); return; }
+void cmd_edit(const char *arg_str) {
+    char args[128];
+    strncpy(args, arg_str, sizeof(args)-1);
+    args[sizeof(args)-1] = 0;
+    char *addr_str = strtok(args, " ");
+    if (!addr_str) { printf("Usage: e <addr> <val> ...\n"); return; }
     uint32_t addr = strtol(addr_str, NULL, 16);
     char *val_str;
     while ((val_str = strtok(NULL, " ")) != NULL) {
@@ -268,8 +276,7 @@ void cmd_edit(char *arg) {
     printf("Updated.\n");
 }
 
-void cmd_disasm(char *arg) {
-    // ... (Implementation from discussion.md is a good starting point) ...
+void cmd_disasm(const char *arg) {
     printf("Disassembly not yet fully implemented.\n");
 }
 
@@ -281,13 +288,23 @@ int main() {
     stdio_init_all();
     
     gpio_init(PIN_LED); gpio_set_dir(PIN_LED, GPIO_OUT);
-    clock_gpio_init(PIN_CLK_OUT, CLOCKS_CLK_GPOUT0, true);
-    clock_configure_gcout(clk_gpout0, 0, 125 * MHZ, 4 * MHZ);
+
+    // FIX: Setup 4MHz clock on PIN_CLK_OUT using PWM
+    // 125MHz sys clock. We want 4MHz. 125/4 = 31.25
+    // We can't get it exactly with integer dividers.
+    // Let's use a simple scheme: 125MHz / (30+1) wrap = 4.03MHz. Close enough.
+    gpio_set_function(PIN_CLK_OUT, GPIO_FUNC_PWM);
+    uint slice_num = pwm_gpio_to_slice_num(PIN_CLK_OUT);
+    pwm_config cfg = pwm_get_default_config();
+    pwm_config_set_wrap(&cfg, 30);
+    pwm_config_set_clkdiv(&cfg, 1.0f);
+    pwm_init(slice_num, &cfg, true);
+    pwm_set_gpio_level(PIN_CLK_OUT, 15); // Set 50% duty cycle
 
     memset(ram, 0x90, RAM_SIZE);
     multicore_launch_core1(core1_entry);
 
-    char line[128], *argv[16], *cmd;
+    char line[128], *argv[16];
     printf("\n\n=== V30 Monitor v%s ===\nType '?' for help.\n", VERSION_STR);
 
     while (true) {
@@ -302,12 +319,12 @@ int main() {
         line[pos] = 0;
         if (pos == 0) continue;
 
-        int argc=0;
-        argv[argc++] = strtok(line, " ");
-        while((argv[argc] = strtok(NULL, " ")) != NULL) argc++;
-
-        cmd = argv[0];
-        char* args = pos > strlen(cmd) ? line + strlen(cmd) + 1 : "";
+        char cmd_line_copy[128];
+        strncpy(cmd_line_copy, line, sizeof(cmd_line_copy));
+        
+        char* cmd = strtok(cmd_line_copy, " ");
+        // FIX: Handle `strtok` modifying the string by using a copy for parsing args
+        const char* args = pos > strlen(cmd) ? line + strlen(cmd) + 1 : "";
 
         if (strcmp(cmd, "?") == 0) {
             printf(" d <addr> [len] : Dump memory\n e <addr> <val> : Edit memory\n l <addr> [len] : Disassemble\n r              : Run & Log\n g              : Run Loop (Key stop)\n xr/xs          : XMODEM Recv/Send RAM\n xl             : XMODEM Send Log\n v              : Version\n autotest       : Full auto test (Rx -> Run -> Tx Log)\n");

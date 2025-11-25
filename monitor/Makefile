@@ -8,6 +8,10 @@ RUNNER    = ./test_runner.py
 SRC_ASM   = test.asm
 TARGET_BIN= test.bin
 
+# Path to the Pico SDK. Adjust if necessary, or set it as an environment variable.
+# The '?=' operator allows this to be overridden from the command line (e.g., make PICO_SDK_PATH=/path/to/sdk)
+PICO_SDK_PATH ?= $(HOME)/tmp/pico-sdk
+
 # Adjust to your Pico's serial port. Use `ls /dev/ttyACM*` to find it.
 PORT      = /dev/ttyACM0
 
@@ -39,14 +43,15 @@ clean:
 	rm -rf build
 	@echo "--- Cleaned all build artifacts ---"
 
+
 # --- Pico Firmware Flashing (Helper) ---
 
 # This target flashes the C++ firmware. If the firmware is not built yet,
 # it will be compiled automatically.
 # Usage: make flash
 # NOTE: The user running 'make' needs sudo permissions for mount/umount.
-#       The device (/dev/sdb1) and mount point (/mnt) are examples and
-#       may need to be adjusted for your system.
+#       The device and mount point are configured via the MOUNT_DEVICE
+#       and MOUNT_POINT variables at the top of this file.
 flash: build/v30_control.uf2
 	@echo "--- Flashing V30 monitor firmware ---"
 	mkdir -p $(MOUNT_POINT)
@@ -59,5 +64,5 @@ flash: build/v30_control.uf2
 build/v30_control.uf2: main.cpp CMakeLists.txt
 	@echo "--- Firmware not found or source changed, building... ---"
 	mkdir -p build
-	cd build && cmake .. && make
+	cd build && cmake -DPICO_SDK_PATH=$(PICO_SDK_PATH) .. && make
 	@echo "--- Firmware build complete. ---"

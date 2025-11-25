@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.13)
-include(pico_sdk_import.cmake)
+include(${PICO_SDK_PATH}/pico_sdk_init.cmake)
 
 project(v30_control C CXX ASM)
 set(CMAKE_C_STANDARD 11)
@@ -17,6 +17,7 @@ target_link_libraries(v30_control
     pico_multicore  # デュアルコア用
     hardware_gpio
     hardware_clocks
+    hardware_pwm # Added for PWM functionality
 )
 
 # USBシリアル有効、UART無効
