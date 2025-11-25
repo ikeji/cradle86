@@ -240,7 +240,7 @@ void core1_entry() {
 //   XMODEM Implementation (Simple)
 // ==========================================
 int _inbyte(unsigned int timeout) { return getchar_timeout_us(timeout * 1000); }
-void _outbyte(int c) { putchar(c); }
+void _outbyte(int c) { putchar(c); fflush(stdout); }
 
 uint16_t crc16_ccitt(const uint8_t *buf, int len) {
     uint16_t crc = 0;
@@ -255,27 +255,108 @@ uint16_t crc16_ccitt(const uint8_t *buf, int len) {
 }
 
 void xmodem_receive(uint8_t *dest, int max_len) {
-    printf("Ready to RECEIVE XMODEM (CRC)... C to cancel\n");
-    uint8_t packetno = 1;
-    int len = 0, retry = 0;
-    while(1) {
-        if (len >= max_len) { _outbyte(CAN); _outbyte(CAN); return; }
-        _outbyte(retry > 0 ? NAK : 'C');
-        int c = _inbyte(2000);
-        if (c < 0) { retry++; continue; }
+    uint8_t buffer[133]; // SOH + Block# + ~Block# + Data[128] + CRC[2]
+    uint8_t block_num = 1;
+    int total_bytes = 0;
+    int retries = 0;
+    const int max_retries = 16;
+    int c; // Declare c at function scope to avoid goto/initialization error
+
+    printf("Ready to RECEIVE XMODEM (CRC)...\n");
+    fflush(stdout);
+
+    // 1. Start transfer: Send 'C' until sender responds with SOH
+    while (retries < max_retries) {
+        _outbyte('C');
+        c = _inbyte(3000);
         if (c == SOH) {
-            uint8_t blk = _inbyte(1000), cblk = _inbyte(1000);
-            if (blk != packetno || blk != (255 - cblk)) { retry++; continue; }
-            uint8_t buff[128];
-            for (int i=0; i<128; i++) buff[i] = _inbyte(1000);
-            uint16_t crc = (_inbyte(1000) << 8) | _inbyte(1000);
-            if (crc == crc16_ccitt(buff, 128)) {
-                memcpy(&dest[len], buff, 128); len += 128;
-                _outbyte(ACK); packetno++; retry = 0;
-            } else { retry++; }
-        } else if (c == EOT) {
-            _outbyte(ACK); printf("\nTransfer complete. %d bytes.\n", len); return;
-        } else if (c == CAN) { printf("\nCanceled by remote.\n"); return; }
+            goto receive_loop; // First SOH received, start main loop
+        }
+        retries++;
+    }
+    printf("Error: No response from sender.\n");
+    return;
+
+receive_loop:
+    retries = 0;
+    while (total_bytes < max_len && retries < max_retries) {
+        // The first SOH was already received, or consumed at the end of the previous loop iteration.
+        // 2. Receive the rest of the block
+        buffer[0] = SOH;
+        for (int i = 1; i < 133; i++) {
+            c = _inbyte(1000);
+            if (c < 0) {
+                // Timeout while receiving packet data
+                while(_inbyte(50) >= 0); // Flush
+                _outbyte(NAK);
+                retries++;
+                goto receive_loop_start_sync; // Go wait for a new SOH
+            }
+            buffer[i] = (uint8_t)c;
+        }
+
+        // 3. Validate block
+        // Check block number
+        if (buffer[1] == block_num && buffer[2] == (uint8_t)~block_num) {
+            // CRC check
+            uint16_t crc_calc = crc16_ccitt(&buffer[3], 128);
+            uint16_t crc_remote = ((uint16_t)buffer[131] << 8) | buffer[132];
+
+            if (crc_calc == crc_remote) {
+                // Block is good, copy data
+                memcpy(&dest[total_bytes], &buffer[3], 128);
+                total_bytes += 128;
+                block_num++;
+                retries = 0;
+                _outbyte(ACK);
+                // Correctly handled packet, now wait for EOT or next SOH
+            } else {
+                // CRC error
+                _outbyte(NAK);
+                retries++;
+                goto receive_loop_start_sync;
+            }
+        } else if (buffer[1] == (uint8_t)(block_num - 1)) {
+            // This is a re-sent packet of the one we just processed. ACK it and move on.
+            _outbyte(ACK);
+            retries = 0;
+        }
+        else {
+            // Block number mismatch
+            _outbyte(NAK);
+            retries++;
+            goto receive_loop_start_sync;
+        }
+
+        // 4. Check for EOT or next SOH
+        c = _inbyte(2000);
+        if (c == EOT) {
+            _outbyte(ACK);
+            printf("\nTransfer complete. Received %d bytes.\n", total_bytes);
+            // Recommended to wait a moment and eat any duplicate EOTs
+            sleep_ms(500);
+            while(_inbyte(100) >= 0);
+            return;
+        } else if (c == SOH) {
+            // Next block starts, loop continues and will process it
+            continue;
+        } else if (c < 0) {
+            // Timeout waiting for EOT or SOH, ask for re-send
+            _outbyte(NAK);
+            retries++;
+        }
+        
+    receive_loop_start_sync:
+        // This is a recovery point. We lost sync, so wait for a fresh SOH.
+        while(true) {
+            c = _inbyte(1000);
+            if(c == SOH) {
+                goto receive_loop;
+            } else if (c < 0) {
+                _outbyte(NAK);
+                break; // Break from inner while to outer while to check retries
+            }
+        }
     }
 }
 
