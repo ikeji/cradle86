@@ -36,11 +36,19 @@
 #define PIN_A19     29
 
 // --- Data Structures ---
+enum LogType {
+    LOG_UNUSED = 0,
+    LOG_MEM_RD,
+    LOG_MEM_WR,
+    LOG_IO_RD,
+    LOG_IO_WR
+};
+
 // Use `packed` attribute to ensure 8-byte alignment for cross-platform compatibility
 struct __attribute__((packed)) BusLog {
     uint32_t address; // 4 bytes
     uint16_t data;    // 2 bytes
-    uint8_t  type;    // 0:MEM_RD, 1:MEM_WR, 2:IO_RD, 3:IO_WR
+    uint8_t  type;    // See LogType. 0 is unused.
     uint8_t  dummy;   // 1 byte padding
 };
 
@@ -148,7 +156,7 @@ void core1_entry() {
                     }
                     write_data(out_data);
 
-                    if (logging) trace_log[cycles] = {addr, out_data, (uint8_t)(is_io ? 2 : 0), 0};
+                    if (logging) trace_log[cycles] = {addr, out_data, (uint8_t)(is_io ? LOG_IO_RD : LOG_MEM_RD), 0};
 
                     while (!(sio_hw->gpio_in & (1 << PIN_RD)));
                     set_ad_dir(false);
@@ -164,7 +172,7 @@ void core1_entry() {
                         if (!(addr & 1)) ram[mapped_addr] = in_data & 0xFF;
                     }
 
-                    if (logging) trace_log[cycles] = {addr, in_data, (uint8_t)(is_io ? 3 : 1), 0};
+                    if (logging) trace_log[cycles] = {addr, in_data, (uint8_t)(is_io ? LOG_IO_WR : LOG_MEM_WR), 0};
                     done = true;
                 }
                 if (sio_hw->gpio_in & (1 << PIN_ALE)) break;
@@ -345,19 +353,40 @@ int main() {
             multicore_fifo_pop_blocking(); printf("Stopped.\n");
         } else if (strcmp(cmd, "r") == 0) {
             printf("Running V30 (Logging %d cycles)...\n", MAX_CYCLES);
+            memset(trace_log, 0, sizeof(trace_log));
             multicore_fifo_push_blocking(CMD_LOG_RUN);
             int cycles = multicore_fifo_pop_blocking();
             printf("--- Log (%d cycles) ---\n", cycles);
             for(int i=0; i<cycles; i++) {
                 const char *types[] = {"RD", "WR", "IO_R", "IO_W"};
-                printf("%05lX|%s|%04X\n", trace_log[i].address, types[trace_log[i].type], trace_log[i].data);
+                // Type is now 1-based (0 is unused)
+                if (trace_log[i].type > 0 && trace_log[i].type <= 4) {
+                    printf("%05lX|%s|%04X\n", trace_log[i].address, types[trace_log[i].type - 1], trace_log[i].data);
+                }
             }
         } else if (strcmp(cmd, "xr") == 0) xmodem_receive(ram, RAM_SIZE);
         else if (strcmp(cmd, "xs") == 0) xmodem_send(ram, RAM_SIZE);
-        else if (strcmp(cmd, "xl") == 0) xmodem_send((uint8_t*)trace_log, sizeof(trace_log));
+        else if (strcmp(cmd, "xl") == 0) {
+            int valid_cycles = 0;
+            for (int i = 0; i < MAX_CYCLES; i++) {
+                if (trace_log[i].type == LOG_UNUSED) {
+                    break; // Stop at the first unused entry
+                }
+                valid_cycles++;
+            }
+            if (valid_cycles > 0) {
+                printf("Sending %d valid log entries (%d bytes)...
+", valid_cycles, valid_cycles * sizeof(BusLog));
+                xmodem_send((uint8_t*)trace_log, valid_cycles * sizeof(BusLog));
+            } else {
+                printf("No log data to send.
+");
+            }
+        }
         else if (strcmp(cmd, "v") == 0) printf("Ver: %s, RAM: %dKB\n", VERSION_STR, RAM_SIZE/1024);
         else if (strcmp(cmd, "autotest") == 0) {
             xmodem_receive(ram, RAM_SIZE);
+            memset(trace_log, 0, sizeof(trace_log));
             multicore_fifo_push_blocking(CMD_LOG_RUN);
             int cycles = multicore_fifo_pop_blocking();
             xmodem_send((uint8_t*)trace_log, cycles * sizeof(BusLog));

@@ -68,6 +68,14 @@ def main():
     print(f"{ 'Cycle':<6} | { 'Address':<7} | { 'Type':<6} | { 'Data':<6} |")
     print("-" * 40)
 
+    # Corresponds to enum LogType in C++
+    type_map = {
+        1: "MEM_RD",
+        2: "MEM_WR",
+        3: "IO_RD",
+        4: "IO_WR",
+    }
+
     LOG_ENTRY_SIZE = 8  # sizeof(BusLog) in C++
     count = 0
     for i in range(0, len(log_buffer), LOG_ENTRY_SIZE):
@@ -76,17 +84,21 @@ def main():
             continue
         
         try:
+            # < = Little-endian, I = uint32, H = uint16, B = uint8
             addr, data, btype, _ = struct.unpack('<IHBB', chunk)
         except struct.error:
             break
         
-        type_str = ["MEM_RD", "MEM_WR", "IO_RD", "IO_WR"][btype & 0x03]
+        # Type 0 is an unused entry, so we can stop.
+        if btype == 0:
+            break
+
+        type_str = type_map.get(btype, "???")
         print(f"{count:<6} | {addr:05X}   | {type_str:<6} | {data:04X}   |")
         count += 1
     
     print("-" * 40)
-    print(f"Total cycles logged: {count}")
-    ser.close()
+    print(f"Total valid cycles logged: {count}")
 
 if __name__ == "__main__":
     main()
