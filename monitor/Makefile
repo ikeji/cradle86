@@ -16,8 +16,8 @@ PICO_SDK_PATH ?= $(HOME)/tmp/pico-sdk
 PORT      = /dev/ttyACM0
 
 # Adjust to your Pico's mass storage device and desired mount point when in bootloader mode.
-MOUNT_DEVICE = /dev/sdb1
-MOUNT_POINT  = /mnt/pico
+MOUNT_DEVICE = /dev/sda1
+MOUNT_POINT  = $(HOME)/mnt/pico
 
 .PHONY: all run clean flash demo
 
@@ -55,7 +55,7 @@ clean:
 flash: build/v30_control.uf2
 	@echo "--- Flashing V30 monitor firmware ---"
 	mkdir -p $(MOUNT_POINT)
-	sudo mount $(MOUNT_DEVICE) $(MOUNT_POINT) || true
+	sudo mount $(MOUNT_DEVICE) $(MOUNT_POINT) -o uid=`id -u` || true
 	cp build/v30_control.uf2 $(MOUNT_POINT)
 	sudo umount $(MOUNT_POINT) || true
 	@echo "--- Flash complete. ---"
