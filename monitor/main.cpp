@@ -327,7 +327,15 @@ int main() {
         const char* args = pos > strlen(cmd) ? line + strlen(cmd) + 1 : "";
 
         if (strcmp(cmd, "?") == 0) {
-            printf(" d <addr> [len] : Dump memory\n e <addr> <val> : Edit memory\n l <addr> [len] : Disassemble\n r              : Run & Log\n g              : Run Loop (Key stop)\n xr/xs          : XMODEM Recv/Send RAM\n xl             : XMODEM Send Log\n v              : Version\n autotest       : Full auto test (Rx -> Run -> Tx Log)\n");
+            printf(" d <addr> [len] : Dump memory\n");
+            printf(" e <addr> <val> : Edit memory\n");
+            printf(" l <addr> [len] : Disassemble\n");
+            printf(" r              : Run & Log\n");
+            printf(" g              : Run Loop (Key stop)\n");
+            printf(" xr/xs          : XMODEM Recv/Send RAM\n");
+            printf(" xl             : XMODEM Send Log\n");
+            printf(" v              : Version\n");
+            printf(" autotest       : Full auto test (Rx -> Run -> Tx Log)\n");
         } else if (strcmp(cmd, "d") == 0) cmd_dump(args);
         else if (strcmp(cmd, "e") == 0) cmd_edit(args);
         else if (strcmp(cmd, "l") == 0) cmd_disasm(args);
