@@ -58,6 +58,21 @@ BusLog trace_log[MAX_CYCLES];
 volatile bool core1_running = false;
 volatile bool stop_request = false;
 
+// --- Clock Config ---
+struct FreqSetting {
+    uint32_t freq_hz;
+    uint16_t wrap;
+    float    div;
+};
+
+const FreqSetting freq_table[] = {
+    { 8000000, 4, 6.25f },
+    { 4000000, 4, 12.5f },
+    { 1000000, 4, 50.0f },
+    {  125000, 99, 20.0f }
+};
+static uint32_t current_freq_hz = 4000000;
+
 // --- XMODEM Constants ---
 #define SOH 0x01
 #define EOT 0x04
@@ -93,6 +108,42 @@ inline uint16_t read_data() {
 
 inline uint32_t map_address(uint32_t v30_addr) {
     return v30_addr & (RAM_SIZE - 1);
+}
+
+void setup_clock(uint32_t freq_hz) {
+    const FreqSetting* setting = nullptr;
+    for (const auto& s : freq_table) {
+        if (s.freq_hz == freq_hz) {
+            setting = &s;
+            break;
+        }
+    }
+
+    if (!setting) {
+        printf("Error: Clock frequency %lu Hz not supported.\n", freq_hz);
+        return;
+    }
+
+    // Configure PWM for clock output
+    gpio_set_function(PIN_CLK_OUT, GPIO_FUNC_PWM);
+    uint slice_num = pwm_gpio_to_slice_num(PIN_CLK_OUT);
+    
+    // Stop PWM while reconfiguring to prevent glitches
+    pwm_set_enabled(slice_num, false);
+
+    pwm_config cfg = pwm_get_default_config();
+    // With 250MHz sys clock, freq = 250M / ((wrap + 1) * div)
+    pwm_config_set_wrap(&cfg, setting->wrap);
+    pwm_config_set_clkdiv(&cfg, setting->div);
+    pwm_init(slice_num, &cfg, true);
+    
+    // Set 50% duty cycle
+    pwm_set_gpio_level(PIN_CLK_OUT, (setting->wrap + 1) / 2);
+
+    // Re-enable PWM
+    pwm_set_enabled(slice_num, true);
+
+    printf("Clock set to %lu Hz\n", freq_hz);
 }
 
 // ==========================================
@@ -297,17 +348,8 @@ int main() {
     
     gpio_init(PIN_LED); gpio_set_dir(PIN_LED, GPIO_OUT);
 
-    // FIX: Setup 4MHz clock on PIN_CLK_OUT using PWM
-    // 125MHz sys clock. We want 4MHz. 125/4 = 31.25
-    // We can't get it exactly with integer dividers.
-    // Let's use a simple scheme: 125MHz / (30+1) wrap = 4.03MHz. Close enough.
-    gpio_set_function(PIN_CLK_OUT, GPIO_FUNC_PWM);
-    uint slice_num = pwm_gpio_to_slice_num(PIN_CLK_OUT);
-    pwm_config cfg = pwm_get_default_config();
-    pwm_config_set_wrap(&cfg, 30);
-    pwm_config_set_clkdiv(&cfg, 1.0f);
-    pwm_init(slice_num, &cfg, true);
-    pwm_set_gpio_level(PIN_CLK_OUT, 15); // Set 50% duty cycle
+    // Setup V30 clock to default frequency
+    setup_clock(current_freq_hz);
 
     memset(ram, 0x90, RAM_SIZE);
     multicore_launch_core1(core1_entry);
@@ -340,6 +382,7 @@ int main() {
             printf(" l <addr> [len] : Disassemble\n");
             printf(" r              : Run & Log\n");
             printf(" g              : Run Loop (Key stop)\n");
+            printf(" c <kHz>        : Set V30 clock speed\n");
             printf(" xr/xs          : XMODEM Recv/Send RAM\n");
             printf(" xl             : XMODEM Send Log\n");
             printf(" v              : Version\n");
@@ -351,6 +394,29 @@ int main() {
             printf("Running V30 (No Log). Press any key to stop...\n");
             multicore_fifo_push_blocking(CMD_FAST_RUN); getchar(); stop_request = true;
             multicore_fifo_pop_blocking(); printf("Stopped.\n");
+        } else if (strcmp(cmd, "c") == 0) {
+            if (!args || strlen(args) == 0) {
+                printf("Usage: c <freq_khz>\n");
+                printf("Available frequencies (kHz):");
+                for (const auto& setting : freq_table) {
+                    printf(" %lu", setting.freq_hz / 1000);
+                }
+                printf("\nCurrent: %lu kHz\n", current_freq_hz / 1000);
+            } else {
+                uint32_t new_freq_khz = strtol(args, NULL, 10);
+                bool found = false;
+                for (const auto& setting : freq_table) {
+                    if ((setting.freq_hz / 1000) == new_freq_khz) {
+                        current_freq_hz = setting.freq_hz;
+                        setup_clock(current_freq_hz);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    printf("Error: Unsupported frequency. Use 'c' to list available options.\n");
+                }
+            }
         } else if (strcmp(cmd, "r") == 0) {
             printf("Running V30 (Logging %d cycles)...\n", MAX_CYCLES);
             memset(trace_log, 0, sizeof(trace_log));
@@ -375,12 +441,10 @@ int main() {
                 valid_cycles++;
             }
             if (valid_cycles > 0) {
-                printf("Sending %d valid log entries (%d bytes)...
-", valid_cycles, valid_cycles * sizeof(BusLog));
+                printf("Sending %d valid log entries (%d bytes)...\n", valid_cycles, valid_cycles * sizeof(BusLog));
                 xmodem_send((uint8_t*)trace_log, valid_cycles * sizeof(BusLog));
             } else {
-                printf("No log data to send.
-");
+                printf("No log data to send.\n");
             }
         }
         else if (strcmp(cmd, "v") == 0) printf("Ver: %s, RAM: %dKB\n", VERSION_STR, RAM_SIZE/1024);
