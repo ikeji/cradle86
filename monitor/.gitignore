@@ -1,0 +1,28 @@
+# Vim swap files and backup files
+*.swp
+*~
+
+# Build artifacts
+build/
+bin/
+obj/
+*.o
+*.a
+*.so
+*.lo
+*.la
+*.dll
+*.exe
+
+# Generated binaries
+test.bin
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
