@@ -580,10 +580,19 @@ int assemble_instruction(uint32_t addr, const char *arg_str) {
         ram[map_address(addr + 1)] = offset;
         bytes = 2;
     } else if (strcasecmp(mnemonic, "jmp") == 0) {
-        char *colon_pos = strchr(op1_str, ':');
+        char* target_str = op1_str;
+        if (op1_str && strcasecmp(op1_str, "far") == 0) {
+            target_str = op2_str;
+        }
+
+        if (!target_str) { // No operand for jmp
+            return 0;
+        }
+        
+        char *colon_pos = strchr(target_str, ':');
         if (colon_pos) { // Far jump: segment:offset
             *colon_pos = '\0'; // Null-terminate segment part
-            uint16_t segment = (uint16_t)strtol(op1_str, NULL, 16);
+            uint16_t segment = (uint16_t)strtol(target_str, NULL, 16);
             uint16_t offset = (uint16_t)strtol(colon_pos + 1, NULL, 16); // Offset part starts after colon
 
             ram[map_address(addr)] = 0xEA; // JMP FAR opcode
@@ -593,7 +602,7 @@ int assemble_instruction(uint32_t addr, const char *arg_str) {
             ram[map_address(addr + 4)] = (segment >> 8) & 0xFF;
             bytes = 5;
         } else { // Near jump: relative to current IP
-            uint32_t target = strtol(op1_str, NULL, 16);
+            uint32_t target = strtol(target_str, NULL, 16);
             int8_t offset = target - (addr + 2); // EB opcode is 2 bytes
             ram[map_address(addr)] = 0xEB; // JMP NEAR rel8 opcode
             ram[map_address(addr + 1)] = offset;
@@ -602,14 +611,24 @@ int assemble_instruction(uint32_t addr, const char *arg_str) {
     }
     // NEW HANDLER FOR DB
     else if (strcasecmp(mnemonic, "db") == 0) {
-        // Corrected logic for db
-        char *current_byte_str = op1_str; // Start with the first operand after "db"
-        if (current_byte_str == NULL) { return 0; } // No bytes specified
-
-        while (current_byte_str != NULL) {
-            ram[map_address(addr + bytes)] = (uint8_t)strtol(current_byte_str, NULL, 16);
+        // The issue is that op1_str and op2_str are tokenized before this handler.
+        // We need to process them and then continue tokenizing.
+        if (op1_str) {
+            ram[map_address(addr + bytes)] = (uint8_t)strtol(op1_str, NULL, 16);
             bytes++;
-            current_byte_str = strtok(NULL, ", "); // Get next byte from the rest of the line
+        } else {
+            return 0; // No arguments for db.
+        }
+
+        if (op2_str) {
+            ram[map_address(addr + bytes)] = (uint8_t)strtol(op2_str, NULL, 16);
+            bytes++;
+        }
+        
+        char *next_op_str;
+        while ((next_op_str = strtok(NULL, " ,")) != NULL) {
+             ram[map_address(addr + bytes)] = (uint8_t)strtol(next_op_str, NULL, 16);
+             bytes++;
         }
     }
 

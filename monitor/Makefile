@@ -99,7 +99,7 @@ demo:
 		sleep 0.3; echo -e -n "d 100 20\r" >&3; \
 		sleep 0.3; echo -e -n "l 100 20\r" >&3; \
 		sleep 0.3; echo -e -n "a FFFF0\r" >&3; \
-		sleep 0.3; echo -e -n "db EA 00 01 00 00\r" >&3; \
+		sleep 0.3; echo -e -n "jmp far 0000:0100\r" >&3; \
 		sleep 0.3; echo -e -n ".\r" >&3; \
 		sleep 0.3; echo -e -n "d FFFF0 16\r" >&3; \
 		sleep 0.3; echo -e -n "l FFFF0 16\r" >&3; \
