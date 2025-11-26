@@ -418,6 +418,7 @@ void cmd_edit(const char *arg_str) {
 
 // --- Assembler/Disassembler ---
 const char* const reg_names[] = {"ax", "cx", "dx", "bx", "sp", "bp", "si", "di"};
+const char* const reg_names8[] = {"al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"};
 
 int reg_to_code(const char* name) {
     if (!name) return -1;
@@ -450,13 +451,13 @@ int assemble_instruction(uint32_t addr, const char *arg_str) {
     } else if (strcasecmp(mnemonic, "mov") == 0) {
         int reg1 = reg_to_code(op1_str);
         if (reg1 != -1 && op2_str) { // mov reg, imm
-            int imm = strtol(op2_str, NULL, 0);
+            int imm = strtol(op2_str, NULL, 16);
             ram[map_address(addr)] = 0xB8 + reg1;
             ram[map_address(addr + 1)] = imm & 0xFF;
             ram[map_address(addr + 2)] = imm >> 8;
             bytes = 3;
         } else if (op1_str[0] == '[' && op2_str && reg_to_code(op2_str) == 0) { // mov [imm], ax
-            int imm = strtol(op1_str + 1, NULL, 0);
+            int imm = strtol(op1_str + 1, NULL, 16);
             ram[map_address(addr)] = 0xA3;
             ram[map_address(addr + 1)] = imm & 0xFF;
             ram[map_address(addr + 2)] = imm >> 8;
@@ -487,17 +488,42 @@ int assemble_instruction(uint32_t addr, const char *arg_str) {
         ram[map_address(addr + 1)] = offset;
         bytes = 2;
     } else if (strcasecmp(mnemonic, "jmp") == 0) {
-        uint32_t target = strtol(op1_str, NULL, 16);
-        int8_t offset = target - (addr + 2);
-        ram[map_address(addr)] = 0xEB;
-        ram[map_address(addr + 1)] = offset;
-        bytes = 2;
+        char *colon_pos = strchr(op1_str, ':');
+        if (colon_pos) { // Far jump: segment:offset
+            *colon_pos = '\0'; // Null-terminate segment part
+            uint16_t segment = (uint16_t)strtol(op1_str, NULL, 16);
+            uint16_t offset = (uint16_t)strtol(colon_pos + 1, NULL, 16); // Offset part starts after colon
+
+            ram[map_address(addr)] = 0xEA; // JMP FAR opcode
+            ram[map_address(addr + 1)] = offset & 0xFF;
+            ram[map_address(addr + 2)] = (offset >> 8) & 0xFF;
+            ram[map_address(addr + 3)] = segment & 0xFF;
+            ram[map_address(addr + 4)] = (segment >> 8) & 0xFF;
+            bytes = 5;
+        } else { // Near jump: relative to current IP
+            uint32_t target = strtol(op1_str, NULL, 16);
+            int8_t offset = target - (addr + 2); // EB opcode is 2 bytes
+            ram[map_address(addr)] = 0xEB; // JMP NEAR rel8 opcode
+            ram[map_address(addr + 1)] = offset;
+            bytes = 2;
+        }
+    }
+    // NEW HANDLER FOR DB
+    else if (strcasecmp(mnemonic, "db") == 0) {
+        // Corrected logic for db
+        char *current_byte_str = op1_str; // Start with the first operand after "db"
+        if (current_byte_str == NULL) { return 0; } // No bytes specified
+
+        while (current_byte_str != NULL) {
+            ram[map_address(addr + bytes)] = (uint8_t)strtol(current_byte_str, NULL, 16);
+            bytes++;
+            current_byte_str = strtok(NULL, ", "); // Get next byte from the rest of the line
+        }
     }
 
     if (bytes > 0) {
         printf(" ->");
         for(int i=0; i<bytes; i++) printf(" %02X", ram[map_address(addr+i)]);
-        printf("\n");
         return bytes;
     } else {
         return 0;
@@ -524,10 +550,22 @@ void cmd_disasm(const char *arg_str) {
 
         if (opcode == 0x90) {
             sprintf(disasm_str, "nop");
+        } else if (opcode >= 0xB0 && opcode <= 0xB7) {
+            bytes = 2;
+            uint8_t imm = ram[map_address(pc + 1)];
+            sprintf(disasm_str, "mov %s, 0x%02X", reg_names8[opcode - 0xB0], imm);
         } else if (opcode >= 0xB8 && opcode <= 0xBF) {
             bytes = 3;
             uint16_t imm = ram[map_address(pc + 1)] | (ram[map_address(pc + 2)] << 8);
             sprintf(disasm_str, "mov %s, 0x%04X", code_to_reg(opcode - 0xB8), imm);
+        } else if (opcode == 0x04) {
+            bytes = 2;
+            uint8_t imm = ram[map_address(pc+1)];
+            sprintf(disasm_str, "add al, 0x%02X", imm);
+        } else if (opcode == 0xA2) {
+            bytes = 3;
+            uint16_t mem_addr = ram[map_address(pc + 1)] | (ram[map_address(pc + 2)] << 8);
+            sprintf(disasm_str, "mov [0x%04X], al", mem_addr);
         } else if (opcode == 0xA3) {
             bytes = 3;
             uint16_t mem_addr = ram[map_address(pc + 1)] | (ram[map_address(pc + 2)] << 8);
@@ -551,6 +589,14 @@ void cmd_disasm(const char *arg_str) {
             bytes = 2;
             int8_t offset = ram[map_address(pc + 1)];
             sprintf(disasm_str, "jmp 0x%04lX", pc + 2 + offset);
+        } else if (opcode == 0xEA) { // JMP FAR segment:offset
+            bytes = 5;
+            uint16_t offset = ram[map_address(pc + 1)] | (ram[map_address(pc + 2)] << 8);
+            uint16_t segment = ram[map_address(pc + 3)] | (ram[map_address(pc + 4)] << 8);
+            sprintf(disasm_str, "jmp far 0x%04X:0x%04X", segment, offset);
+        } else if (opcode == 0xF4) {
+            bytes = 1;
+            sprintf(disasm_str, "hlt");
         } else {
             sprintf(disasm_str, "db 0x%02X", opcode);
         }
@@ -598,6 +644,11 @@ int main() {
         strncpy(cmd_line_copy, line, sizeof(cmd_line_copy));
         
         char* cmd = strtok(cmd_line_copy, " ");
+        
+        // Add a check for NULL cmd here
+        if (cmd == NULL) {
+            continue; // Skip processing if command is empty or just whitespace
+        }
         const char* args = pos > strlen(cmd) ? line + strlen(cmd) + 1 : "";
 
         if (strcmp(cmd, "?") == 0) {
@@ -632,26 +683,30 @@ int main() {
                 int asm_pos = 0;
                 while(asm_pos < 127) {
                     int c = getchar();
-                    if (c == '\r' || c == '\n') { break; }
+                    if (c == '\r' || c == '\n') { // User presses Enter
+                        break; // Just break, newline handled below
+                    }
                     if (c == 0x08 || c == 0x7F) { if(asm_pos > 0) { asm_pos--; printf("\b \b"); }}
                     else if (isprint(c)) { asm_line[asm_pos++] = c; putchar(c); }
                 }
                 asm_line[asm_pos] = 0;
 
                 if (strcmp(asm_line, ".") == 0) {
-                    putchar('\n');
+                    putchar('\n'); // For the '.' command, print a newline and exit.
                     break;
                 }
                 if (asm_pos == 0) {
-                    putchar('\n');
+                    putchar('\n'); // If empty line (user just pressed enter), output a newline and prompt again.
                     continue;
                 }
                 
-                int bytes = assemble_instruction(current_addr, asm_line);
+                int bytes = assemble_instruction(current_addr, asm_line); // Prints " -> XX XX XX" (no newline)
                 if (bytes > 0) {
+                    putchar('\n'); // Add newline after the assembled instruction output.
                     current_addr += bytes;
                 } else {
                     printf("Error: Unknown instruction or invalid operands.\n");
+                    putchar('\n'); // Add newline for error message
                 }
             }
         }

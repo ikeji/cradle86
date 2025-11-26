@@ -19,7 +19,13 @@ PORT      = /dev/ttyACM0
 MOUNT_DEVICE = /dev/sda1
 MOUNT_POINT  = $(HOME)/mnt/pico
 
-.PHONY: all run clean flash demo
+# --- Test Flash Target ---
+test-flash: $(TARGET_BIN)
+	@echo ">>> Sending $(TARGET_BIN) to $(DEMO_PORT) via XMODEM..."
+	@(sleep 0.5; echo "xr"; sleep 0.5; sx -b $(TARGET_BIN); sleep 0.5) > $(DEMO_PORT) < $(DEMO_PORT)
+	@echo ">>> XMODEM Transfer complete for $(TARGET_BIN)."
+
+.PHONY: all run clean flash demo test-flash
 
 # --- Main Targets ---
 
@@ -79,26 +85,28 @@ demo:
 	@bash -c '\
 		exec 3<>$(DEMO_PORT); \
 		stty -F $(DEMO_PORT) $(DEMO_BAUD) raw -echo; \
-		trap "kill $$CAT_PID 2>/dev/null; exec 3<&-" EXIT; \
-		cat <&3 & \
-		CAT_PID=$$!; \
 		sleep 2; \
-		echo -e "\r\na 100\r" >&3; \
-		sleep 0.3; echo -e "mov cx, 10\r" >&3; \
-		sleep 0.3; echo -e "mov ax, 1\r" >&3; \
-		sleep 0.3; echo -e "mov bx, 0\r" >&3; \
-		sleep 0.3; echo -e "add ax, bx\r" >&3; \
-		sleep 0.3; echo -e "xchg ax, bx\r" >&3; \
-		sleep 0.3; echo -e "loop 109\r" >&3; \
-		sleep 0.3; echo -e "mov [200], ax\r" >&3; \
-		sleep 0.3; echo -e "jmp 111\r" >&3; \
-		sleep 0.3; echo -e ".\r" >&3; \
-		sleep 0.3; echo -e "\r\nd 100 20\r" >&3; \
-		sleep 0.3; echo -e "\r\nl 100 20\r" >&3; \
-		sleep 0.5; echo -e "\r\ng\r" >&3; \
-		sleep 1; \
-		echo -e " \r" >&3; \
-		sleep 0.5; echo -e "\r\nd 200 2\r" >&3; \
-        sleep 2; \
+		echo -e -n "a 100\r" >&3; \
+		sleep 0.3; echo -e -n "mov cx, 10\r" >&3; \
+		sleep 0.3; echo -e -n "mov ax, 1\r" >&3; \
+		sleep 0.3; echo -e -n "mov bx, 0\r" >&3; \
+		sleep 0.3; echo -e -n "add ax, bx\r" >&3; \
+		sleep 0.3; echo -e -n "xchg ax, bx\r" >&3; \
+		sleep 0.3; echo -e -n "loop 109\r" >&3; \
+		sleep 0.3; echo -e -n "mov [200], ax\r" >&3; \
+		echo -e -n "jmp 111\r" >&3; \
+		sleep 0.3; echo -e -n ".\r" >&3; \
+		sleep 0.3; echo -e -n "d 100 20\r" >&3; \
+		sleep 0.3; echo -e -n "l 100 20\r" >&3; \
+		sleep 0.3; echo -e -n "a FFFF0\r" >&3; \
+		sleep 0.3; echo -e -n "db EA 00 01 00 00\r" >&3; \
+		sleep 0.3; echo -e -n ".\r" >&3; \
+		sleep 0.3; echo -e -n "d FFFF0 16\r" >&3; \
+		sleep 0.3; echo -e -n "l FFFF0 16\r" >&3; \
+		sleep 0.5; echo -e -n "g\r" >&3; \
+		sleep 1; echo -e -n " \r" >&3; \
+		sleep 0.5; echo -e -n "d 200 2\r" >&3; \
+		sleep 2; \
+        exec 3<&- ; \
 	'
 	@echo ">>> Demo Finished."
