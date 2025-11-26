@@ -83,12 +83,23 @@ static uint32_t current_freq_hz = 4000000;
 // ==========================================
 //   Hardware Helper Functions
 // ==========================================
+
+/**
+ * @brief V30のアドレス/データバス(AD0-15)の方向を設定します。
+ * @param output trueの場合は出力、falseの場合は入力に設定します。
+ * @return なし
+ */
 inline void set_ad_dir(bool output) {
     uint32_t mask = (1 << 16) - 1; // Mask for GP0-15
     if (output) sio_hw->gpio_oe_set = mask;
     else        sio_hw->gpio_oe_clr = mask;
 }
 
+/**
+ * @brief V30バスからアドレス(A0-A19)を読み取ります。
+ * @param なし
+ * @return 読み取った20ビットのアドレス
+ */
 inline uint32_t read_addr() {
     uint32_t r = sio_hw->gpio_in;
     uint32_t addr = r & 0xFFFF;
@@ -97,19 +108,39 @@ inline uint32_t read_addr() {
     return addr;
 }
 
+/**
+ * @brief V30のデータバス(AD0-15)に16ビットのデータを書き込みます。
+ * @param d 書き込む16ビットデータ
+ * @return なし
+ */
 inline void write_data(uint16_t d) {
     uint32_t old_out = sio_hw->gpio_out;
     sio_hw->gpio_out = (old_out & 0xFFFF0000) | d;
 }
 
+/**
+ * @brief V30のデータバス(AD0-15)から16ビットのデータを読み取ります。
+ * @param なし
+ * @return 読み取った16ビットデータ
+ */
 inline uint16_t read_data() {
     return sio_hw->gpio_in & 0xFFFF;
 }
 
+/**
+ * @brief V30の20ビットアドレスを、Pico上の64KB RAMアドレス空間にマッピングします。
+ * @param v30_addr V30の物理アドレス
+ * @return PicoのRAM内の対応するアドレス
+ */
 inline uint32_t map_address(uint32_t v30_addr) {
     return v30_addr & (RAM_SIZE - 1);
 }
 
+/**
+ * @brief V30に供給するクロックを指定された周波数で生成します。
+ * @param freq_hz 目標の周波数 (Hz)
+ * @return なし
+ */
 void setup_clock(uint32_t freq_hz) {
     const FreqSetting* setting = nullptr;
     for (const auto& s : freq_table) {
@@ -152,6 +183,12 @@ void setup_clock(uint32_t freq_hz) {
 #define CMD_LOG_RUN  1
 #define CMD_FAST_RUN 2
 
+/**
+ * @brief Core 1のエントリポイント。V30バスサイクルをエミュレートし、Core 0からのコマンドを処理します。
+ * この関数は無限ループで実行され、V30のメモリアクセスとI/Oアクセスをハンドリングします。
+ * @param なし
+ * @return なし
+ */
 void core1_entry() {
     set_ad_dir(false);
     const uint32_t ctrl_mask = (1<<PIN_ALE)|(1<<PIN_RD)|(1<<PIN_WR)|(1<<PIN_IOM)|(1<<PIN_BHE);
@@ -239,9 +276,26 @@ void core1_entry() {
 // ==========================================
 //   XMODEM Implementation (Simple)
 // ==========================================
+/**
+ * @brief XMODEM転送のために、タイムアウト付きで1バイトを標準入力から読み取ります。
+ * @param timeout タイムアウト時間 (ミリ秒)
+ * @return 読み取った文字。タイムアウトした場合は負数。
+ */
 int _inbyte(unsigned int timeout) { return getchar_timeout_us(timeout * 1000); }
+
+/**
+ * @brief XMODEM転送のために、1バイトを標準出力に書き込みます。
+ * @param c 書き込む文字
+ * @return なし
+ */
 void _outbyte(int c) { putchar(c); fflush(stdout); }
 
+/**
+ * @brief データバッファのCRC-16-CCITTチェックサムを計算します。
+ * @param buf データバッファへのポインタ
+ * @param len データの長さ (バイト)
+ * @return 計算された16ビットのCRC値
+ */
 uint16_t crc16_ccitt(const uint8_t *buf, int len) {
     uint16_t crc = 0;
     while (len--) {
@@ -254,6 +308,12 @@ uint16_t crc16_ccitt(const uint8_t *buf, int len) {
     return crc;
 }
 
+/**
+ * @brief XMODEM-CRCプロトコルを使用してデータを受信します。
+ * @param dest 受信したデータを格納するバッファ
+ * @param max_len 受信可能な最大バイト数
+ * @return なし
+ */
 void xmodem_receive(uint8_t *dest, int max_len) {
     uint8_t buffer[133]; // SOH + Block# + ~Block# + Data[128] + CRC[2]
     uint8_t block_num = 1;
@@ -360,6 +420,12 @@ receive_loop:
     }
 }
 
+/**
+ * @brief XMODEM-CRCプロトコルを使用してデータを送信します。
+ * @param src 送信するデータが格納されたバッファ
+ * @param len 送信するデータのバイト数
+ * @return なし
+ */
 void xmodem_send(uint8_t *src, int len) {
     printf("Ready to SEND XMODEM...\n");
     int c;
@@ -384,6 +450,11 @@ void xmodem_send(uint8_t *src, int len) {
 // ==========================================
 //   Monitor Commands
 // ==========================================
+/**
+ * @brief 'd' (dump) コマンドを処理します。指定されたアドレスからメモリの内容を16進数とASCIIで表示します。
+ * @param arg_str コマンドの引数文字列 (アドレスと長さ)
+ * @return なし
+ */
 void cmd_dump(const char *arg_str) {
     char args[128];
     strncpy(args, arg_str, sizeof(args)-1);
@@ -402,6 +473,11 @@ void cmd_dump(const char *arg_str) {
     }
 }
 
+/**
+ * @brief 'e' (edit) コマンドを処理します。指定されたアドレスのメモリの内容を書き換えます。
+ * @param arg_str コマンドの引数文字列 (アドレスと書き込むデータ)
+ * @return なし
+ */
 void cmd_edit(const char *arg_str) {
     char args[128];
     strncpy(args, arg_str, sizeof(args)-1);
@@ -420,6 +496,11 @@ void cmd_edit(const char *arg_str) {
 const char* const reg_names[] = {"ax", "cx", "dx", "bx", "sp", "bp", "si", "di"};
 const char* const reg_names8[] = {"al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"};
 
+/**
+ * @brief 16ビットレジスタ名を対応する3ビットのコードに変換します。
+ * @param name レジスタ名 (例: "ax", "cx")
+ * @return レジスタコード (0-7)。見つからない場合は-1。
+ */
 int reg_to_code(const char* name) {
     if (!name) return -1;
     for (int i = 0; i < 8; i++) {
@@ -428,11 +509,22 @@ int reg_to_code(const char* name) {
     return -1;
 }
 
+/**
+ * @brief レジスタコードを対応する16ビットレジスタ名に変換します。
+ * @param code レジスタコード (0-7)
+ * @return レジスタ名を表す文字列。無効なコードの場合は "???"。
+ */
 const char* code_to_reg(int code) {
     if (code >= 0 && code < 8) return reg_names[code];
     return "??";
 }
 
+/**
+ * @brief 1行のアセンブリコードをマシン語に変換（アセンブル）します。
+ * @param addr 命令を書き込むメモリのアドレス
+ * @param arg_str アセンブリ命令の文字列 (例: "mov ax, 1234")
+ * @return アセンブルされた命令のバイト数。エラーの場合は0。
+ */
 int assemble_instruction(uint32_t addr, const char *arg_str) {
     char args[256];
     strncpy(args, arg_str, sizeof(args)-1);
@@ -530,7 +622,11 @@ int assemble_instruction(uint32_t addr, const char *arg_str) {
     }
 }
 
-
+/**
+ * @brief 'l' (disassemble) コマンドを処理します。指定されたアドレスからメモリの内容を逆アセンブルします。
+ * @param arg_str コマンドの引数文字列 (アドレスと長さ)
+ * @return なし
+ */
 void cmd_disasm(const char *arg_str) {
     char args[128];
     strncpy(args, arg_str, sizeof(args)-1);
@@ -613,6 +709,12 @@ void cmd_disasm(const char *arg_str) {
 // ==========================================
 //   Core 0: Main Monitor
 // ==========================================
+/**
+ * @brief メイン関数。Core 0で実行され、シリアルモニタのユーザインタフェースを処理します。
+ * ユーザからのコマンド入力を受け付け、対応する処理を呼び出します。
+ * @param なし
+ * @return 0 (ただし、無限ループのため通常は返らない)
+ */
 int main() {
     set_sys_clock_khz(250000, true);
     stdio_init_all();
