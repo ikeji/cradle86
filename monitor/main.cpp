@@ -15,7 +15,7 @@
 #include "hardware/pwm.h" // Added for clock generation
 
 // --- Config ---
-#define VERSION_STR "1.0.2"
+#define VERSION_STR "0.0.1"
 #define RAM_SIZE    0x10000   // 64KB Virtual RAM
 #define MAX_CYCLES  5000      // Log buffer size
 
@@ -314,7 +314,7 @@ uint16_t crc16_ccitt(const uint8_t *buf, int len) {
  * @param max_len 受信可能な最大バイト数
  * @return なし
  */
-void xmodem_receive(uint8_t *dest, int max_len) {
+bool xmodem_receive(uint8_t *dest, int max_len) {
     uint8_t buffer[133]; // SOH + Block# + ~Block# + Data[128] + CRC[2]
     uint8_t block_num = 1;
     int total_bytes = 0;
@@ -322,8 +322,9 @@ void xmodem_receive(uint8_t *dest, int max_len) {
     const int max_retries = 16;
     int c; // Declare c at function scope to avoid goto/initialization error
 
-    printf("Ready to RECEIVE XMODEM (CRC)...\n");
-    fflush(stdout);
+    // printf("Ready to RECEIVE XMODEM (CRC)...\n");
+    // fflush(stdout);
+    stdio_set_translate_crlf(&stdio_usb, false);
 
     // 1. Start transfer: Send 'C' until sender responds with SOH
     while (retries < max_retries) {
@@ -335,11 +336,12 @@ void xmodem_receive(uint8_t *dest, int max_len) {
         retries++;
     }
     printf("Error: No response from sender.\n");
-    return;
+    stdio_set_translate_crlf(&stdio_usb, true);
+    return false;
 
 receive_loop:
     retries = 0;
-    while (total_bytes < max_len && retries < max_retries) {
+    while (retries < max_retries) { // The loop should only terminate on EOT or retry limit.
         // The first SOH was already received, or consumed at the end of the previous loop iteration.
         // 2. Receive the rest of the block
         buffer[0] = SOH;
@@ -363,7 +365,13 @@ receive_loop:
             uint16_t crc_remote = ((uint16_t)buffer[131] << 8) | buffer[132];
 
             if (crc_calc == crc_remote) {
-                // Block is good, copy data
+                // Block is good, copy data, but prevent buffer overflow.
+                if (total_bytes + 128 > max_len) {
+                    printf("Error: XMODEM data exceeds max_len. Aborting.\n");
+                    stdio_set_translate_crlf(&stdio_usb, true);
+                    _outbyte(CAN); _outbyte(CAN);
+                    return false;
+                }
                 memcpy(&dest[total_bytes], &buffer[3], 128);
                 total_bytes += 128;
                 block_num++;
@@ -396,7 +404,8 @@ receive_loop:
             // Recommended to wait a moment and eat any duplicate EOTs
             sleep_ms(500);
             while(_inbyte(100) >= 0);
-            return;
+            stdio_set_translate_crlf(&stdio_usb, true);
+            return true;
         } else if (c == SOH) {
             // Next block starts, loop continues and will process it
             continue;
@@ -418,6 +427,10 @@ receive_loop:
             }
         }
     }
+    // If we fall through the main while loop, it's due to retries or max_len exceeded without EOT.
+    _outbyte(CAN); _outbyte(CAN); // Abort transfer
+    stdio_set_translate_crlf(&stdio_usb, true);
+    return false;
 }
 
 /**
@@ -426,25 +439,91 @@ receive_loop:
  * @param len 送信するデータのバイト数
  * @return なし
  */
-void xmodem_send(uint8_t *src, int len) {
-    printf("Ready to SEND XMODEM...\n");
+bool xmodem_send(uint8_t *src, int len) {
+    printf("Ready to SEND XMODEM...\n"); fflush(stdout);
+    stdio_set_translate_crlf(&stdio_usb, false);
     int c;
-    while ((c = _inbyte(10000)) != 'C' && c != NAK) if (c == CAN) return;
+    int retries;
+
+    // 1. Initial Handshake - wait for a single 'C' to start
+    for (retries=0;retries<10;retries++) {
+      c = _inbyte(10000); 
+      if (c != 'C') {
+        printf("XMODEM Send: Handshake failed. Expected 'C', got 0x%02X\n", c); fflush(stdout);
+        _outbyte(CAN); _outbyte(CAN);
+        continue;
+      }
+      break;
+    }
+
+    // 2. Handle 0-byte file transfer
+    if (len == 0) {
+        _outbyte(EOT);
+        _inbyte(2000); // Consume ACK
+        stdio_set_translate_crlf(&stdio_usb, true);
+        printf("XMODEM Send: 0-byte transfer complete.\n"); fflush(stdout);
+        return true;
+    }
     
+    // 3. Main data transfer loop
     uint8_t packetno = 1;
-    for (int sent_len = 0; sent_len < len; sent_len += 128) {
-        _outbyte(SOH); _outbyte(packetno); _outbyte(255 - packetno);
-        uint8_t buff[128];
-        memset(buff, 0x1A, 128);
-        memcpy(buff, &src[sent_len], (len - sent_len) > 128 ? 128 : (len - sent_len));
-        for (int i=0; i<128; i++) _outbyte(buff[i]);
-        uint16_t crc = crc16_ccitt(buff, 128);
-        _outbyte(crc >> 8); _outbyte(crc & 0xFF);
-        if (_inbyte(5000) != ACK) { sent_len -= 128; }
+    for (int sent_len = 0; sent_len < len; ) {
+        retries = 0;
+        while (retries < 10) {
+            // 3.1 Send packet
+            _outbyte(SOH);
+            _outbyte(packetno);
+            _outbyte(~packetno);
+
+            uint8_t buff[128];
+            memset(buff, 0x1A, 128); // Pad
+            int bytes_to_copy = (len - sent_len) > 128 ? 128 : (len - sent_len);
+            if (bytes_to_copy > 0) {
+                memcpy(buff, &src[sent_len], bytes_to_copy);
+            }
+            for (int i=0; i<128; i++) _outbyte(buff[i]);
+
+            uint16_t crc = crc16_ccitt(buff, 128);
+            _outbyte(crc >> 8);
+            _outbyte(crc & 0xFF);
+
+            // 3.2 Wait for ACK
+            c = _inbyte(5000);
+            if (c == ACK) {
+                break; // Success
+            }
+            // On NAK or timeout, retry
+            retries++;
+        }
+
+        if (retries >= 10) {
+            _outbyte(CAN); _outbyte(CAN);
+            stdio_set_translate_crlf(&stdio_usb, true);
+            printf("XMODEM Send: Failed to get ACK for packet %d\n", packetno); fflush(stdout);
+            return false;
+        }
+
+        // 3.3 Increment for next packet
+        sent_len += 128;
         packetno++;
     }
-    _outbyte(EOT); _inbyte(2000);
-    printf("\nSend complete.\n");
+
+    // 4. End of Transmission
+    retries = 0;
+    while (retries < 10) {
+        _outbyte(EOT);
+        c = _inbyte(2000);
+        if (c == ACK) {
+            stdio_set_translate_crlf(&stdio_usb, true);
+            printf("\nSend complete.\n"); fflush(stdout);
+            return true;
+        }
+        retries++;
+    }
+
+    stdio_set_translate_crlf(&stdio_usb, true);
+    printf("XMODEM Send: Failed to get final ACK for EOT.\n"); fflush(stdout);
+    return false;
 }
 
 // ==========================================
@@ -736,8 +815,9 @@ void cmd_disasm(const char *arg_str) {
  */
 int main() {
     set_sys_clock_khz(250000, true);
-    stdio_init_all();
-    
+    // stdio_init_all();
+    stdio_usb_init();
+
     gpio_init(PIN_LED); gpio_set_dir(PIN_LED, GPIO_OUT);
 
     // Setup V30 clock to default frequency
@@ -872,9 +952,19 @@ int main() {
                     printf("%05lX|%s|%04X\n", trace_log[i].address, types[trace_log[i].type - 1], trace_log[i].data);
                 }
             }
-        } else if (strcmp(cmd, "xr") == 0) xmodem_receive(ram, RAM_SIZE);
-        else if (strcmp(cmd, "xs") == 0) xmodem_send(ram, RAM_SIZE);
-        else if (strcmp(cmd, "xl") == 0) {
+        } else if (strcmp(cmd, "xr") == 0) {
+            if (xmodem_receive(ram, RAM_SIZE)) {
+                printf("XMODEM receive completed successfully.\n");
+            } else {
+                printf("XMODEM receive failed.\n");
+            }
+        } else if (strcmp(cmd, "xs") == 0) {
+            if (xmodem_send(ram, RAM_SIZE)) {
+                printf("XMODEM send completed successfully.\n");
+            } else {
+                printf("XMODEM send failed.\n");
+            }
+        } else if (strcmp(cmd, "xl") == 0) {
             int valid_cycles = 0;
             for (int i = 0; i < MAX_CYCLES; i++) {
                 if (trace_log[i].type == LOG_UNUSED) {
@@ -884,19 +974,40 @@ int main() {
             }
             if (valid_cycles > 0) {
                 printf("Sending %d valid log entries (%d bytes)...\n", valid_cycles, valid_cycles * sizeof(BusLog));
-                xmodem_send((uint8_t*)trace_log, valid_cycles * sizeof(BusLog));
+                if (!xmodem_send((uint8_t*)trace_log, valid_cycles * sizeof(BusLog))) {
+                    printf("Log send failed.\n");
+                }
             } else {
                 printf("No log data to send.\n");
             }
         }
         else if (strcmp(cmd, "v") == 0) printf("Ver: %s, RAM: %dKB\n", VERSION_STR, RAM_SIZE/1024);
         else if (strcmp(cmd, "autotest") == 0) {
-            xmodem_receive(ram, RAM_SIZE);
-            memset(trace_log, 0, sizeof(trace_log));
-            multicore_fifo_push_blocking(CMD_LOG_RUN);
-            int cycles = multicore_fifo_pop_blocking();
-            xmodem_send((uint8_t*)trace_log, cycles * sizeof(BusLog));
-            printf("\nDone. Cycles: %d\n", cycles);
+            printf("[AUTOTEST] Receiving test binary...\n"); fflush(stdout);
+            if (xmodem_receive(ram, RAM_SIZE)) {
+                printf("[AUTOTEST] Receive success. Running test...\n"); fflush(stdout);
+                memset(trace_log, 0, sizeof(trace_log));
+                multicore_fifo_push_blocking(CMD_LOG_RUN);
+                printf("[AUTOTEST] Waiting for Core1 to complete...\n"); fflush(stdout);
+                int cycles = multicore_fifo_pop_blocking();
+                printf("[AUTOTEST] Core1 finished. Cycles: %d\n", cycles); fflush(stdout);
+                
+                // Give receiver a moment to get ready
+                sleep_ms(500);
+
+                if (cycles > 0) {
+                    printf("[AUTOTEST] Sending log data (%d bytes)...\n", cycles * (int)sizeof(BusLog)); fflush(stdout);
+                    if (!xmodem_send((uint8_t*)trace_log, cycles * sizeof(BusLog))) {
+                        printf("[AUTOTEST] Failed to send log data.\n"); fflush(stdout);
+                    }
+                } else {
+                    printf("[AUTOTEST] No log data to send.\n"); fflush(stdout);
+                }
+                printf("\nDone. Cycles: %d\n", cycles); fflush(stdout);
+            } else {
+                printf("[AUTOTEST] Aborting: Failed to receive test binary.\n"); fflush(stdout);
+            }
+            printf("[AUTOTEST] Handler finished. Returning to main loop.\n"); fflush(stdout);
         }
         else printf("Unknown command: %s\n", cmd);
     }

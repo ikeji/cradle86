@@ -37,10 +37,41 @@ def main():
     ser.flush()
     print(">>> Sent 'autotest' command. Waiting for Pico to be ready...")
 
+    # Wait for the specific "Ready to RECEIVE" message from the Pico
+    # to ensure it's in the correct state.
+    ready_message = b"Ready to RECEIVE XMODEM (CRC)..."
+    full_response = b""
+    # Set a timeout for the initial readiness check
+    original_timeout = ser.timeout
+    ser.timeout = 2 # 2-second timeout for readline
+
+    for i in range(5): # Total timeout ~10s
+        line = ser.readline()
+        if line:
+            # Print for debugging purposes
+            sys.stdout.buffer.write(line)
+            sys.stdout.buffer.flush()
+            full_response += line
+            if ready_message in full_response:
+                print(">>> Pico is ready. Proceeding with XMODEM upload...")
+                ser.reset_input_buffer() # Clear input buffer before starting XMODEM
+                break
+        else:
+            # Timeout on readline
+            print(f">>> Waiting for Pico... (attempt {i+1}/5)")
+    
+    ser.timeout = original_timeout # Restore original timeout
+
+    if ready_message not in full_response:
+        print("\n>>> Timeout or error: Pico did not become ready for XMODEM transfer.")
+        ser.close()
+        sys.exit(1)
+
     # 2. Send the V30 binary file
     try:
         with open(args.binfile, 'rb') as f:
             print(f">>> Uploading {args.binfile}...")
+            # The xmodem library will now handle the 'C' handshake on a clean line.
             if not xm.send(f, quiet=False):
                 print(">>> Upload Failed. Aborting.")
                 ser.close()

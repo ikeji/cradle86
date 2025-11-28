@@ -16,7 +16,7 @@ PICO_SDK_PATH ?= $(HOME)/tmp/pico-sdk
 PORT      = /dev/ttyACM0
 
 # Adjust to your Pico's mass storage device and desired mount point when in bootloader mode.
-MOUNT_DEVICE = /dev/sda1
+MOUNT_DEVICE = /dev/disk/by-id/usb-RPI_RP2_E0C9125B0D9B-0:0-part1
 MOUNT_POINT  = $(HOME)/mnt/pico
 
 # --- Test Flash Target ---
