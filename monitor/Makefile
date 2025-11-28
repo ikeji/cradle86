@@ -7,6 +7,12 @@ RUNNER    = ./test_runner.py
 
 SRC_ASM   = test.asm
 TARGET_BIN= test.bin
+# C language test files
+SRC_C     = test-c.c
+TARGET_C_BIN = test-c.bin
+TARGET_C_BIN_TMP = test-c.tmp.bin
+RESET_VEC_ASM = reset_vec.asm
+RESET_VEC_BIN = reset_vec.bin
 
 # Path to the Pico SDK. Adjust if necessary, or set it as an environment variable.
 # The '?=' operator allows this to be overridden from the command line (e.g., make PICO_SDK_PATH=/path/to/sdk)
@@ -26,7 +32,44 @@ test-flash: $(TARGET_BIN)
 	@sx -b $(TARGET_BIN) > $(PORT) < $(PORT)
 	@echo ">>> XMODEM Transfer complete for $(TARGET_BIN)."
 
-.PHONY: all run clean flash demo test-flash test-retrieve
+.PHONY: all run clean flash demo test-flash test-retrieverun-c disasm-asm disasm-c
+
+# --- Disassembly Targets ---
+disasm-asm: $(TARGET_BIN)
+	@echo "--- Disassembling $(TARGET_BIN) ---"
+	ndisasm -b 16 -o 0x0 $(TARGET_BIN)
+
+disasm-c: $(TARGET_C_BIN)
+	@echo "--- Disassembling $(TARGET_C_BIN) ---"
+	ndisasm -b 16 -o 0x0 $(TARGET_C_BIN)
+
+# --- C Language Test Target ---
+
+# Rule to build the reset vector binary
+$(RESET_VEC_BIN): $(RESET_VEC_ASM)
+	nasm -f bin $< -o $@
+
+# Rule to build the C test binary with stack setup and reset vector
+$(TARGET_C_BIN): $(SRC_C) $(RESET_VEC_BIN)
+	@echo "--- Compiling $< with bcc ---"
+	bcc -ansi -0 -c -o $(SRC_C:.c=.o) $(SRC_C)
+	ld86 -d -o $(TARGET_C_BIN_TMP) $(SRC_C:.c=.o)
+	@echo "--- Creating final 64KB binary with reset vector: $@ ---"
+	@# Create a 64KB file filled with NOPs (0x90)
+	@dd if=/dev/zero bs=65536 count=1 | tr '\000' '\220' > $@
+	@# Overwrite the beginning of the file with the compiled C program
+	@dd if=$(TARGET_C_BIN_TMP) of=$@ conv=notrunc >/dev/null 2>&1
+	@# Overwrite the end of the file with the reset vector (at 0xFFF0)
+	@dd if=$(RESET_VEC_BIN) of=$@ seek=65520 bs=1 conv=notrunc >/dev/null 2>&1
+	@echo "--- Created $@ ---"
+	@# Cleanup intermediate files
+	@rm -f $(SRC_C:.c=.o) $(TARGET_C_BIN_TMP)
+
+# Build and run the test cycle with the C binary
+run-c: $(TARGET_C_BIN)
+	@echo "--- Starting Test Runner with C binary ---"
+	$(PYTHON) $(RUNNER) --port $(PORT) --binfile $(TARGET_C_BIN)
+
 
 # --- Test Retrieve Target ---
 test-retrieve:
@@ -54,7 +97,7 @@ run: $(TARGET_BIN)
 
 # Clean up build artifacts from both the test program and the firmware
 clean:
-	rm -f $(TARGET_BIN)
+	rm -f $(TARGET_BIN) $(TARGET_C_BIN) $(RESET_VEC_BIN)
 	rm -rf build
 	@echo "--- Cleaned all build artifacts ---"
 

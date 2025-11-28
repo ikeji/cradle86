@@ -27,3 +27,5 @@ __pycache__/
 # Windows
 Thumbs.db
 dump.bin
+reset_vec.bin
+test-c.bin
