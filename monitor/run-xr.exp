@@ -1,0 +1,15 @@
+#!/usr/bin/expect -f
+
+set port [lindex $argv 0]
+set timeout 10
+
+spawn -open [open $port r+]
+
+send "\r"
+expect ">"
+
+send "xr\r"
+
+expect "C"
+
+close
