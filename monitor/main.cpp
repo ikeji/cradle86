@@ -322,8 +322,8 @@ bool xmodem_receive(uint8_t *dest, int max_len) {
     const int max_retries = 16;
     int c; // Declare c at function scope to avoid goto/initialization error
 
-    // printf("Ready to RECEIVE XMODEM (CRC)...\n");
-    // fflush(stdout);
+    printf("Ready to RECEIVE XMODEM (CRC)...\n");
+    fflush(stdout);
     stdio_set_translate_crlf(&stdio_usb, false);
 
     // 1. Start transfer: Send 'C' until sender responds with SOH

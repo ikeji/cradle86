@@ -4,6 +4,7 @@ import time
 import struct
 import serial
 import argparse
+import io
 from xmodem import XMODEM
 
 def main():
@@ -76,25 +77,47 @@ def main():
                 print(">>> Upload Failed. Aborting.")
                 ser.close()
                 sys.exit(1)
-            print(">>> Upload Success.")
+        print(">>> Upload Success.")
     except FileNotFoundError:
-        print(f"Error: Binary file not found at '{args.binfile}'")
+        print(f"Error: Binary file not found at '{args.binfile}'")   
+
+    # 3. Wait for the test to run and Pico to be ready to send the log
+    print(">>> V30 is running... Waiting for Pico to start log transmission...")
+    
+    pico_ready_to_send = False
+    # Read lines from Pico until we see the "Ready to SEND" message or we time out.
+    log_send_ready_msg = b"Ready to SEND XMODEM..."
+    for _ in range(15): # Try for up to 15 seconds
+        try:
+            line = ser.readline()
+            if line:
+                line_str = line.decode(errors='ignore').strip()
+                print(f"PICO: {line_str}")
+                if log_send_ready_msg.decode() in line_str:
+                    pico_ready_to_send = True
+                    break
+            else: # Timeout
+                time.sleep(1)
+        except Exception as e:
+            print(f"Error reading from serial: {e}")
+            break
+    if not pico_ready_to_send:
+        print("\n>>> Error: Timed out waiting for Pico to start sending log data.")
         ser.close()
         sys.exit(1)
 
-    # 3. Receive the binary log data
-    print(">>> V30 is running... Waiting for binary log back...")
-    log_buffer = bytearray()
+    # 4. Receive the binary log data
+    print(">>> Pico is ready to send. Receiving binary log...")
+    log_stream = io.BytesIO()
     
-    # Give Pico a moment to switch from Rx to Tx
-    time.sleep(0.5) 
-    
-    if not xm.recv(lambda data: log_buffer.extend(data) or True, quiet=False):
+    if not xm.recv(log_stream, quiet=False):
         print(">>> Log Receive Failed. Pico may not have sent anything.")
+        log_buffer = b'' # Ensure log_buffer is bytes
     else:
+        log_buffer = log_stream.getvalue()
         print(f">>> Log Received. Total bytes: {len(log_buffer)}")
 
-    # 4. Decode and print the log
+    # 5. Decode and print the log
     print("\n=== Execution Log (Decoded on PC) ===")
     print(f"{ 'Cycle':<6} | { 'Address':<7} | { 'Type':<6} | { 'Data':<6} |")
     print("-" * 40)
@@ -122,6 +145,9 @@ def main():
         
         # Type 0 is an unused entry, so we can stop.
         if btype == 0:
+            break
+        # Type is EOL came from xmode0m
+        if btype == 0x1A:
             break
 
         type_str = type_map.get(btype, "???")
