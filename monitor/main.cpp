@@ -71,7 +71,7 @@ const FreqSetting freq_table[] = {
     { 1000000, 4, 50.0f },
     {  125000, 99, 20.0f }
 };
-static uint32_t current_freq_hz = 4000000;
+static uint32_t current_freq_hz = 125000;
 
 // --- XMODEM Constants ---
 #define SOH 0x01
@@ -227,7 +227,7 @@ void core1_entry() {
             if (!ale_detected) break;
 
             uint32_t addr = read_addr();
-            bool is_io = (sio_hw->gpio_in & (1 << PIN_IOM));
+            bool is_io = !(sio_hw->gpio_in & (1 << PIN_IOM));
             
             while (sio_hw->gpio_in & (1 << PIN_ALE));
 
@@ -946,7 +946,7 @@ int main() {
             int cycles = multicore_fifo_pop_blocking();
             printf("--- Log (%d cycles) ---\n", cycles);
             for(int i=0; i<cycles; i++) {
-                const char *types[] = {"RD", "WR", "IO_R", "IO_W"};
+                const char *types[] = {"RD", "WR", "IR", "IW"};
                 // Type is now 1-based (0 is unused)
                 if (trace_log[i].type > 0 && trace_log[i].type <= 4) {
                     printf("%05lX|%s|%04X\n", trace_log[i].address, types[trace_log[i].type - 1], trace_log[i].data);
