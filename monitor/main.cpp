@@ -202,18 +202,22 @@ void core1_entry() {
     gpio_put(PIN_RESET, 0);
 
     while (true) {
-        uint32_t cmd = multicore_fifo_pop_blocking();
+        uint32_t raw_cmd = multicore_fifo_pop_blocking();
         core1_running = true;
         stop_request = false;
 
         gpio_put(PIN_RESET, 1); sleep_ms(1); gpio_put(PIN_RESET, 0);
 
         int cycles = 0;
-        bool logging = (cmd == CMD_LOG_RUN);
-        bool infinite = (cmd == CMD_FAST_RUN);
+        bool logging = ((raw_cmd & 0x3) == CMD_LOG_RUN); // Use lower 2 bits for command type
+        bool infinite = ((raw_cmd & 0x3) == CMD_FAST_RUN);
+        int cycle_limit = (raw_cmd >> 2); // Extract cycle limit from higher bits
+
+        // If not logging or infinite, cycle_limit will be 0, meaning use MAX_CYCLES (or some other default)
+        if (!logging && !infinite) cycle_limit = MAX_CYCLES; // Fallback for commands without explicit cycle count
 
         while (true) {
-            if (!infinite && cycles >= MAX_CYCLES) break;
+            if (!infinite && cycles >= cycle_limit) break;
             if (infinite && stop_request) break;
 
             absolute_time_t t_start = get_absolute_time();
@@ -571,6 +575,20 @@ void cmd_edit(const char *arg_str) {
     printf("Updated.\n");
 }
 
+/**
+ * @brief 'f' (fill) コマンドを処理します。指定されたバイト値でメモリ全体を埋めます。
+ * @param arg_str コマンドの引数文字列 (16進数のバイト値)
+ * @return なし
+ */
+void cmd_fill(const char *arg_str) {
+    uint8_t fill_val = 0xF4; // Default to HLT
+    if (arg_str && strlen(arg_str) > 0) {
+        fill_val = (uint8_t)strtol(arg_str, NULL, 16);
+    }
+    memset(ram, fill_val, RAM_SIZE);
+    printf("Memory filled with 0x%02X.\n", fill_val);
+}
+
 // --- Assembler/Disassembler ---
 const char* const reg_names[] = {"ax", "cx", "dx", "bx", "sp", "bp", "si", "di"};
 const char* const reg_names8[] = {"al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"};
@@ -823,7 +841,7 @@ int main() {
     // Setup V30 clock to default frequency
     setup_clock(current_freq_hz);
 
-    memset(ram, 0x90, RAM_SIZE);
+    memset(ram, 0xF4, RAM_SIZE); // Default to HLT
     multicore_launch_core1(core1_entry);
 
     char line[128], *argv[16];
@@ -855,9 +873,10 @@ int main() {
         if (strcmp(cmd, "?") == 0) {
             printf(" d <addr> [len] : Dump memory\n");
             printf(" e <addr> <val> : Edit memory\n");
+            printf(" f [val]        : Fill memory with byte (default F4)\n");
             printf(" a <addr>       : Assemble interactively\n");
             printf(" l <addr> [len] : Disassemble\n");
-            printf(" r              : Run & Log\n");
+            printf(" r [cycles]     : Run & Log for specified cycles (default %d)\n", MAX_CYCLES);
             printf(" g              : Run Loop (Key stop)\n");
             printf(" c <kHz>        : Set V30 clock speed\n");
             printf(" xr/xs          : XMODEM Recv/Send RAM\n");
@@ -866,6 +885,7 @@ int main() {
             printf(" autotest       : Full auto test (Rx -> Run -> Tx Log)\n");
         } else if (strcmp(cmd, "d") == 0) cmd_dump(args);
         else if (strcmp(cmd, "e") == 0) cmd_edit(args);
+        else if (strcmp(cmd, "f") == 0) cmd_fill(args);
         else if (strcmp(cmd, "a") == 0) {
             char args_copy[128];
             strncpy(args_copy, args, sizeof(args_copy));
@@ -940,9 +960,17 @@ int main() {
                 }
             }
         } else if (strcmp(cmd, "r") == 0) {
-            printf("Running V30 (Logging %d cycles)...\n", MAX_CYCLES);
+            int run_cycles = MAX_CYCLES; // Default
+            if (strlen(args) > 0) {
+                run_cycles = strtol(args, NULL, 10);
+                if (run_cycles <= 0 || run_cycles > MAX_CYCLES) {
+                    printf("Invalid cycle count. Using default %d.\n", MAX_CYCLES);
+                    run_cycles = MAX_CYCLES;
+                }
+            }
+            printf("Running V30 (Logging %d cycles)...\n", run_cycles);
             memset(trace_log, 0, sizeof(trace_log));
-            multicore_fifo_push_blocking(CMD_LOG_RUN);
+            multicore_fifo_push_blocking(CMD_LOG_RUN | (run_cycles << 2)); // Use lower 2 bits for CMD_LOG_RUN, rest for cycles
             int cycles = multicore_fifo_pop_blocking();
             printf("--- Log (%d cycles) ---\n", cycles);
             for(int i=0; i<cycles; i++) {
