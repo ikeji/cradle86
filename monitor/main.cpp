@@ -49,7 +49,7 @@ struct __attribute__((packed)) BusLog {
     uint32_t address; // 4 bytes
     uint16_t data;    // 2 bytes
     uint8_t  type;    // See LogType. 0 is unused.
-    uint8_t  dummy;   // 1 byte padding
+    uint8_t  ctrl;    // control signals. bit 0 for BHE status (1=low, 0=high)
 };
 
 // --- Globals ---
@@ -69,7 +69,9 @@ const FreqSetting freq_table[] = {
     { 8000000, 4, 6.25f },
     { 4000000, 4, 12.5f },
     { 1000000, 4, 50.0f },
-    {  125000, 99, 20.0f }
+    {  125000, 99, 20.0f },
+    {   50000, 99, 50.0f },
+    {   10000, 249, 100.0f }
 };
 static uint32_t current_freq_hz = 125000;
 
@@ -248,7 +250,10 @@ void core1_entry() {
                     }
                     write_data(out_data);
 
-                    if (logging) trace_log[cycles] = {addr, out_data, (uint8_t)(is_io ? LOG_IO_RD : LOG_MEM_RD), 0};
+                    if (logging) {
+                        uint8_t ctrl_flags = (pins & (1u << PIN_BHE)) ? 0 : 1; // 1 if BHE is low
+                        trace_log[cycles] = {addr, out_data, (uint8_t)(is_io ? LOG_IO_RD : LOG_MEM_RD), ctrl_flags};
+                    }
 
                     while (!(sio_hw->gpio_in & (1 << PIN_RD)));
                     set_ad_dir(false);
@@ -264,7 +269,10 @@ void core1_entry() {
                         if (!(addr & 1)) ram[mapped_addr] = in_data & 0xFF;
                     }
 
-                    if (logging) trace_log[cycles] = {addr, in_data, (uint8_t)(is_io ? LOG_IO_WR : LOG_MEM_WR), 0};
+                    if (logging) {
+                        uint8_t ctrl_flags = (pins & (1u << PIN_BHE)) ? 0 : 1; // 1 if BHE is low
+                        trace_log[cycles] = {addr, in_data, (uint8_t)(is_io ? LOG_IO_WR : LOG_MEM_WR), ctrl_flags};
+                    }
                     done = true;
                 }
                 if (sio_hw->gpio_in & (1 << PIN_ALE)) break;
@@ -973,11 +981,12 @@ int main() {
             multicore_fifo_push_blocking(CMD_LOG_RUN | (run_cycles << 2)); // Use lower 2 bits for CMD_LOG_RUN, rest for cycles
             int cycles = multicore_fifo_pop_blocking();
             printf("--- Log (%d cycles) ---\n", cycles);
+            printf("ADDR  |B|TY|DATA\n");
             for(int i=0; i<cycles; i++) {
                 const char *types[] = {"RD", "WR", "IR", "IW"};
                 // Type is now 1-based (0 is unused)
                 if (trace_log[i].type > 0 && trace_log[i].type <= 4) {
-                    printf("%05lX|%s|%04X\n", trace_log[i].address, types[trace_log[i].type - 1], trace_log[i].data);
+                    printf("%05lX|%s|%s|%04X\n", trace_log[i].address, (trace_log[i].ctrl & 1 ? "B" : "-"), types[trace_log[i].type - 1], trace_log[i].data);
                 }
             }
         } else if (strcmp(cmd, "xr") == 0) {

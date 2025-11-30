@@ -119,8 +119,8 @@ def main():
 
     # 5. Decode and print the log
     print("\n=== Execution Log (Decoded on PC) ===")
-    print(f"{ 'Cycle':<6} | { 'Address':<7} | { 'Type':<6} | { 'Data':<6} |")
-    print("-" * 40)
+    print(f"{ 'Cycle':<6} | { 'Address':<7} | { 'BHE':<3} | { 'Type':<6} | { 'Data':<6} |")
+    print("-" * 46)
 
     # Corresponds to enum LogType in C++
     type_map = {
@@ -138,8 +138,8 @@ def main():
             continue
         
         try:
-            # < = Little-endian, I = uint32, H = uint16, B = uint8
-            addr, data, btype, _ = struct.unpack('<IHBB', chunk)
+            # < = Little-endian, I = uint32, H = uint16, B = uint8 (for type and ctrl)
+            addr, data, btype, ctrl = struct.unpack('<IHBB', chunk)
         except struct.error:
             break
         
@@ -151,10 +151,11 @@ def main():
             break
 
         type_str = type_map.get(btype, "???")
-        print(f"{count:<6} | {addr:05X}   | {type_str:<6} | {data:04X}   |")
+        bhe_str = "B" if (ctrl & 1) else "-" # Bit 0 of ctrl indicates BHE low (1) or high (0)
+        print(f"{count:<6} | {addr:05X}   | {bhe_str:<3} | {type_str:<6} | {data:04X}   |")
         count += 1
     
-    print("-" * 40)
+    print("-" * 46)
     print(f"Total valid cycles logged: {count}")
 
 if __name__ == "__main__":
