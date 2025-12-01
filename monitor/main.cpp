@@ -192,6 +192,8 @@ void setup_clock(uint32_t freq_hz) {
  * @return なし
  */
 void core1_entry() {
+    // Initialize AD0-15 as GPIO pins
+    gpio_init_mask((1 << 16) - 1); // Mask for GP0-15
     set_ad_dir(false);
     const uint32_t ctrl_mask = (1<<PIN_ALE)|(1<<PIN_RD)|(1<<PIN_WR)|(1<<PIN_IOM)|(1<<PIN_BHE);
     gpio_init_mask(ctrl_mask);
@@ -201,7 +203,7 @@ void core1_entry() {
     gpio_set_dir_in_masked(addr_mask);
 
     gpio_init(PIN_RESET); gpio_set_dir(PIN_RESET, GPIO_OUT);
-    gpio_put(PIN_RESET, 0);
+    gpio_put(PIN_RESET, 1);
 
     while (true) {
         uint32_t raw_cmd = multicore_fifo_pop_blocking();
@@ -222,26 +224,37 @@ void core1_entry() {
             if (!infinite && cycles >= cycle_limit) break;
             if (infinite && stop_request) break;
 
-            absolute_time_t t_start = get_absolute_time();
+            absolute_time_t t_start_ale = get_absolute_time();
             bool ale_detected = false;
-            while (absolute_time_diff_us(t_start, get_absolute_time()) < 100000) {
+            while (absolute_time_diff_us(t_start_ale, get_absolute_time()) < 100000) { // ALE high timeout
                 if (sio_hw->gpio_in & (1 << PIN_ALE)) {
                     ale_detected = true;
                     break;
                 }
             }
-            if (!ale_detected) break;
+            if (!ale_detected) {
+                break; // Break from main cycle loop
+            }
 
             uint32_t addr = read_addr();
             bool is_io = !(sio_hw->gpio_in & (1 << PIN_IOM));
             
+            // Wait for ALE to go low (no timeout requested here)
             while (sio_hw->gpio_in & (1 << PIN_ALE));
 
-            bool done = false;
-            while (!done) {
+            bool done_bus_cycle_op = false;
+            const uint32_t BUS_OPERATION_TIMEOUT_US = 100000; // 100ms timeout for RD/WR going low
+            absolute_time_t t_start_bus_operation = get_absolute_time();
+
+            while (!done_bus_cycle_op) {
+                if (absolute_time_diff_us(t_start_bus_operation, get_absolute_time()) > BUS_OPERATION_TIMEOUT_US) {
+                    printf("Bus operation timeout (no RD/WR detected low), breaking cycle.\n");
+                    break; // Break from this inner loop, which will then break the outer cycle loop
+                }
                 uint32_t pins = sio_hw->gpio_in;
                 
                 if (!(pins & (1 << PIN_RD))) {
+                    sleep_us(3);  // これが無いとショートしてデバイスが落ちる。
                     set_ad_dir(true);
                     uint16_t out_data = 0xFFFF;
                     if (!is_io) {
@@ -255,11 +268,13 @@ void core1_entry() {
                         trace_log[cycles] = {addr, out_data, (uint8_t)(is_io ? LOG_IO_RD : LOG_MEM_RD), ctrl_flags};
                     }
 
+                    // Wait for RD to go high (no timeout requested here)
                     while (!(sio_hw->gpio_in & (1 << PIN_RD)));
                     set_ad_dir(false);
-                    done = true;
+                    done_bus_cycle_op = true;
                 }
                 else if (!(pins & (1 << PIN_WR))) {
+                    // Wait for WR to go high (no timeout requested here)
                     while (!(sio_hw->gpio_in & (1 << PIN_WR)));
                     uint16_t in_data = read_data();
                     
@@ -273,13 +288,20 @@ void core1_entry() {
                         uint8_t ctrl_flags = (pins & (1u << PIN_BHE)) ? 0 : 1; // 1 if BHE is low
                         trace_log[cycles] = {addr, in_data, (uint8_t)(is_io ? LOG_IO_WR : LOG_MEM_WR), ctrl_flags};
                     }
-                    done = true;
+                    done_bus_cycle_op = true;
                 }
-                if (sio_hw->gpio_in & (1 << PIN_ALE)) break;
+                // If ALE goes high during an active bus cycle (RD/WR phase), it indicates an issue or new cycle.
+                // This breaks out of the current bus operation to re-sync with the CPU.
+                if (sio_hw->gpio_in & (1 << PIN_ALE)) {
+                    printf("ALE detected high unexpectedly during RD/WR wait, breaking current bus operation.\n");
+                    break; // Break from done_bus_cycle_op loop
+                }
             }
-            if(done) cycles++;
+            if(done_bus_cycle_op) cycles++;
+
         }
-        
+
+        gpio_put(PIN_RESET, 1);
         core1_running = false;
         multicore_fifo_push_blocking(cycles);
     }
@@ -1024,7 +1046,7 @@ int main() {
             if (xmodem_receive(ram, RAM_SIZE)) {
                 printf("[AUTOTEST] Receive success. Running test...\n"); fflush(stdout);
                 memset(trace_log, 0, sizeof(trace_log));
-                multicore_fifo_push_blocking(CMD_LOG_RUN);
+                multicore_fifo_push_blocking(CMD_LOG_RUN | (MAX_CYCLES << 2));
                 printf("[AUTOTEST] Waiting for Core1 to complete...\n"); fflush(stdout);
                 int cycles = multicore_fifo_pop_blocking();
                 printf("[AUTOTEST] Core1 finished. Cycles: %d\n", cycles); fflush(stdout);
