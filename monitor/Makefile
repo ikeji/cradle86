@@ -97,7 +97,7 @@ run: $(TARGET_BIN)
 
 # Clean up build artifacts from both the test program and the firmware
 clean:
-	rm -f $(TARGET_BIN) $(TARGET_C_BIN) $(RESET_VEC_BIN)
+	rm -f $(TARGET_BIN) $(TARGET_C_BIN) $(RESET_VEC_BIN) *.o *.tmp.bin
 	rm -rf build
 	@echo "--- Cleaned all build artifacts ---"
 

@@ -12,6 +12,7 @@ start:
     
     mov [0x0100], al ; Write the result to memory address 0x0100
                      ; This will appear in the bus log as a WR cycle.
+    out 5, al      ; Output the result to IO port 5
 
     hlt             ; Halt the CPU. The Pico will detect this via timeout.
 

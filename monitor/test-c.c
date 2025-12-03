@@ -14,21 +14,34 @@ void _start() {
     main();
 }
 
+void hlt(){
+  asm("hlt");
+}
+
+unsigned char mem;
+void out_mem(){
+  asm("mov al, _mem");
+  asm("out 5, al");
+}
+
 // Main C logic, same as before.
 void main() {
-    // Declare all variables at the top of the function.
-    char *mem;
-    unsigned char a;
-    unsigned char b;
+  // Declare all variables at the top of the function.
+  unsigned char a;
+  unsigned char b;
+  unsigned char c;
 
-    // Assign values to the variables.
-    mem = (char *)0x0100;
-    a = 1;
-    b = 2;
-    
-    // Perform the calculation and store the result.
-    *mem = a + b;
-    
-    // Halt the CPU by entering an infinite loop.
-    while(1);
+  // Assign values to the variables.
+  a = 1;
+  b = 2;
+
+  // Perform the calculation and store the result.
+  c = a + b;
+  mem = c;
+
+  // out_mem();  // ここでCALLすると暴走する？
+  asm("mov al, _mem");
+  asm("out 5, al");
+
+  hlt();
 }
