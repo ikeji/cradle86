@@ -258,8 +258,10 @@ void core1_entry() {
                     set_ad_dir(true);
                     uint16_t out_data = 0xFFFF;
                     if (!is_io) {
-                         uint32_t mapped_addr = map_address(addr);
-                         out_data = ram[mapped_addr] | (ram[map_address(mapped_addr + 1)] << 8);
+                         // Optimized read: Always read the word-aligned data.
+                         // The CPU will select the correct byte (or word) based on A0 and BHE#.
+                         uint32_t aligned_v30_addr = addr & ~1;
+                         out_data = ram[map_address(aligned_v30_addr)] | (ram[map_address(aligned_v30_addr + 1)] << 8);
                     }
                     write_data(out_data);
 
@@ -279,9 +281,18 @@ void core1_entry() {
                     uint16_t in_data = read_data();
                     
                     if (!is_io) {
-                        uint32_t mapped_addr = map_address(addr);
-                        if (!(pins & (1u << PIN_BHE))) ram[map_address(mapped_addr + 1)] = in_data >> 8;
-                        if (!(addr & 1)) ram[mapped_addr] = in_data & 0xFF;
+                        bool bhe_low = !(pins & (1u << PIN_BHE));
+                        bool a0_low = !(addr & 1);
+
+                        if (bhe_low && a0_low) { // Word Write to even address
+                            ram[map_address(addr)] = in_data & 0xFF;
+                            ram[map_address(addr + 1)] = in_data >> 8;
+                        } else if (bhe_low && !a0_low) { // High Byte Write to odd address
+                            ram[map_address(addr)] = in_data >> 8;
+                        } else if (!bhe_low && a0_low) { // Low Byte Write to even address
+                            ram[map_address(addr)] = in_data & 0xFF;
+                        }
+                        // For invalid case (BHE high, A0 high), nothing is written.
                     }
 
                     if (logging) {

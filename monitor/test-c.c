@@ -19,7 +19,8 @@ void hlt(){
 }
 
 unsigned char mem;
-void out_mem(){
+void out(unsigned char value){
+  mem = value;
   asm("mov al, _mem");
   asm("out 5, al");
 }
@@ -37,11 +38,8 @@ void main() {
 
   // Perform the calculation and store the result.
   c = a + b;
-  mem = c;
 
-  // out_mem();  // ここでCALLすると暴走する？
-  asm("mov al, _mem");
-  asm("out 5, al");
+  out(c);
 
   hlt();
 }

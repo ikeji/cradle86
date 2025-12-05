@@ -119,8 +119,8 @@ def main():
 
     # 5. Decode and print the log
     print("\n=== Execution Log (Decoded on PC) ===")
-    print(f"{ 'Cycle':<6} | { 'Address':<7} | { 'BHE':<3} | { 'Type':<6} | { 'Data':<6} |")
-    print("-" * 46)
+    print(f"{'Cycle':<5} | {'Address':<7} | {'BHE':<3} | {'A0':<2} | {'Type':<6} | {'Access':<9} | {'Data':<4} | {'Value':<5} |")
+    print("-" * 64)
 
     # Corresponds to enum LogType in C++
     type_map = {
@@ -151,11 +151,40 @@ def main():
             break
 
         type_str = type_map.get(btype, "???")
-        bhe_str = "B" if (ctrl & 1) else "-" # Bit 0 of ctrl indicates BHE low (1) or high (0)
-        print(f"{count:<6} | {addr:05X}   | {bhe_str:<3} | {type_str:<6} | {data:04X}   |")
+        
+        bhe_val = (ctrl & 1) # 1 if BHE# is Low (active), 0 if BHE# is High (inactive)
+        a0_val = addr & 1    # 0 if A0 is Low (even), 1 if A0 is High (odd)
+
+        # Determine Access Type based on BHE# and A0
+        access_type_str = "INVALID" # Default for BHE#=High, A0=High (0,1)
+        if bhe_val == 1: # BHE# is Low (active)
+            if a0_val == 0: # A0 is Low (even)
+                access_type_str = "WORD"
+            else: # A0 is High (odd)
+                access_type_str = "HIGH_BYTE"
+        else: # BHE# is High (inactive)
+            if a0_val == 0: # A0 is Low (even)
+                access_type_str = "LOW_BYTE"
+            # else: BHE# is High, A0 is High -> INVALID (default)
+        
+        # Format BHE# and A0 for display
+        bhe_display_str = "1" if bhe_val else "0"
+        a0_display_str = "1" if a0_val else "0"
+
+        # Calculate value to display in "Value" column
+        value_to_display_str = "----"
+        if access_type_str == "HIGH_BYTE":
+            value_to_display_str = f"{data >> 8:02X}"
+        elif access_type_str == "LOW_BYTE":
+            value_to_display_str = f"{data & 0xFF:02X}"
+        elif access_type_str == "WORD":
+            value_to_display_str = f"{data:04X}"
+        # For "INVALID", it remains "----"
+
+        print(f"{count:<5} | {f'{addr:05X}':<7} | {bhe_display_str:<3} | {a0_display_str:<2} | {type_str:<6} | {access_type_str:<9} | {f'{data:04X}':<4} | {value_to_display_str:<5} |")
         count += 1
     
-    print("-" * 46)
+    print("-" * 64)
     print(f"Total valid cycles logged: {count}")
 
 if __name__ == "__main__":
