@@ -173,3 +173,6 @@ demo:
         exec 3<&- ; \
 	'
 	@echo ">>> Demo Finished."
+
+setup:
+	sudo apt install bcc expect
