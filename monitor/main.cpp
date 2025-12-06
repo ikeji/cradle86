@@ -186,9 +186,10 @@ void setup_clock(uint32_t freq_hz) {
 // ==========================================
 //   Core 1: V30 Bus Driver
 // ==========================================
-#define CMD_LOG_RUN  1
-#define CMD_FAST_RUN 2
-#define CMD_IOLOG_RUN 3
+// Core 1 commands
+#define CMD_RUN_FULLLOG  1 // Run with full memory and I/O logging.
+#define CMD_RUN_NOLOG    2 // Run without logging.
+#define CMD_RUN_IOLOG    3 // Run with I/O logging only.
 
 /**
  * @brief Core 1のエントリポイント。V30バスサイクルをエミュレートし、Core 0からのコマンドを処理します。
@@ -220,18 +221,32 @@ void core1_entry() {
 
         int logged_cycles = 0;
         int bus_cycles = 0;
-        bool logging = (command == CMD_LOG_RUN || command == CMD_IOLOG_RUN);
-        bool infinite = (command == CMD_FAST_RUN);
-        int local_limit = 0;
+        
+        enum LoggingMode { NO_LOG, IO_LOG, FULL_LOG };
+        LoggingMode logging_mode;
 
-        if (logging) {
-            local_limit = cycle_limit;
+        switch(command) {
+            case CMD_RUN_NOLOG:
+                logging_mode = NO_LOG;
+                break;
+            case CMD_RUN_IOLOG:
+                logging_mode = IO_LOG;
+                break;
+            case CMD_RUN_FULLLOG:
+                logging_mode = FULL_LOG;
+                break;
+            default:
+                // Unknown command, ensure loop terminates immediately.
+                logging_mode = NO_LOG;
+                bus_cycles = cycle_limit + 1; // force exit
+                break;
         }
 
         while (true) {
-            if (logging && bus_cycles >= local_limit) break;
-            if (infinite && stop_request) break;
-            if (!logging && !infinite) break; // Exit for unknown commands
+            // --- Unified Termination Conditions ---
+            if (stop_request) break;
+            if (bus_cycles >= cycle_limit) break;
+            if (logging_mode != NO_LOG && logged_cycles >= MAX_CYCLES) break;
 
             absolute_time_t t_start_ale = get_absolute_time();
             bool ale_detected = false;
@@ -274,8 +289,8 @@ void core1_entry() {
                     }
                     write_data(out_data);
 
-                    if (logging) {
-                        bool should_log = (command == CMD_LOG_RUN) || (command == CMD_IOLOG_RUN && is_io);
+                    if (logging_mode != NO_LOG) {
+                        bool should_log = (logging_mode == FULL_LOG) || (logging_mode == IO_LOG && is_io);
                         if (should_log) {
                             uint8_t ctrl_flags = (pins & (1u << PIN_BHE)) ? 0 : 1; // 1 if BHE is low
                             trace_log[logged_cycles] = {addr, out_data, (uint8_t)(is_io ? LOG_IO_RD : LOG_MEM_RD), ctrl_flags};
@@ -308,8 +323,8 @@ void core1_entry() {
                         // For invalid case (BHE high, A0 high), nothing is written.
                     }
 
-                    if (logging) {
-                        bool should_log = (command == CMD_LOG_RUN) || (command == CMD_IOLOG_RUN && is_io);
+                    if (logging_mode != NO_LOG) {
+                        bool should_log = (logging_mode == FULL_LOG) || (logging_mode == IO_LOG && is_io);
                         if (should_log) {
                             uint8_t ctrl_flags = (pins & (1u << PIN_BHE)) ? 0 : 1; // 1 if BHE is low
                             trace_log[logged_cycles] = {addr, in_data, (uint8_t)(is_io ? LOG_IO_WR : LOG_MEM_WR), ctrl_flags};
@@ -943,8 +958,8 @@ int main() {
             printf(" f [val]        : Fill memory with byte (default F4)\n");
             printf(" a <addr>       : Assemble interactively\n");
             printf(" l <addr> [len] : Disassemble\n");
-            printf(" r [cycles]     : Run & Log for specified cycles (default %d)\n", MAX_CYCLES);
-            printf(" i [cycles]     : Run & Log IO only for specified cycles\n");
+            printf(" r [cycles]     : Run & Log for specified cycles (0 or omit for infinite)\n");
+            printf(" i [cycles]     : Run & Log IO only for specified cycles (0 or omit for infinite)\n");
             printf(" g              : Run Loop (Key stop)\n");
             printf(" c <kHz>        : Set V30 clock speed\n");
             printf(" xr/xs          : XMODEM Recv/Send RAM\n");
@@ -1001,11 +1016,13 @@ int main() {
         }
         else if (strcmp(cmd, "g") == 0) {
             printf("Running V30 (No Log). Press any key to stop...\n");
-            multicore_fifo_push_blocking(CMD_FAST_RUN);
+            cycle_limit = 0x7FFFFFFF; // Effectively infinite for manual stop
+            multicore_fifo_push_blocking(CMD_RUN_NOLOG);
             getchar(); stop_request = true;
             multicore_fifo_pop_blocking(); // Wait for completion signal
+            int cycles = executed_cycles;
             int time_us = execution_time_us; // Read execution time
-            printf("Stopped. (%d us)\n", time_us);
+            printf("Stopped. Ran %d cycles in %d us.\n", cycles, time_us);
         } else if (strcmp(cmd, "c") == 0) {
             if (!args || strlen(args) == 0) {
                 printf("Usage: c <freq_khz>\n");
@@ -1030,18 +1047,26 @@ int main() {
                 }
             }
         } else if (strcmp(cmd, "r") == 0) {
-            int run_cycles = MAX_CYCLES; // Default
-            if (strlen(args) > 0) {
-                run_cycles = strtol(args, NULL, 10);
-                if (run_cycles <= 0 || run_cycles > MAX_CYCLES) {
-                    printf("Invalid cycle count. Using default %d.\n", MAX_CYCLES);
-                    run_cycles = MAX_CYCLES;
+            int run_cycles_val;
+            if (strlen(args) == 0) {
+                printf("Running V30 (Logging, Infinite cycles). Press any key to stop...\n"); // Added message for infinite run
+                cycle_limit = 0x7FFFFFFF; // Infinite cycles
+                run_cycles_val = 0; // Indicate infinite run, not used for loop directly
+            } else {
+                run_cycles_val = strtol(args, NULL, 10);
+                if (run_cycles_val == 0) { // Explicitly set 0 for infinite
+                    printf("Running V30 (Logging, Infinite cycles). Press any key to stop...\n");
+                    cycle_limit = 0x7FFFFFFF; // Infinite cycles
+                } else if (run_cycles_val < 0 || run_cycles_val > MAX_CYCLES) {
+                    printf("Invalid cycle count (%d). Using default %d.\n", run_cycles_val, MAX_CYCLES);
+                    cycle_limit = MAX_CYCLES;
+                } else {
+                    printf("Running V30 (Logging %d cycles)...\n", run_cycles_val);
+                    cycle_limit = run_cycles_val;
                 }
             }
-            printf("Running V30 (Logging %d cycles)...\n", run_cycles);
             memset(trace_log, 0, sizeof(trace_log));
-            cycle_limit = run_cycles;
-            multicore_fifo_push_blocking(CMD_LOG_RUN);
+            multicore_fifo_push_blocking(CMD_RUN_FULLLOG);
             multicore_fifo_pop_blocking();
             int cycles = executed_cycles;
             int time_us = execution_time_us; // Read execution time
@@ -1057,18 +1082,26 @@ int main() {
                 }
             }
         } else if (strcmp(cmd, "i") == 0) {
-            int run_cycles = MAX_CYCLES; // Default
-            if (strlen(args) > 0) {
-                run_cycles = strtol(args, NULL, 10);
-                if (run_cycles <= 0 || run_cycles > MAX_CYCLES) {
-                    printf("Invalid cycle count. Using default %d.\n", MAX_CYCLES);
-                    run_cycles = MAX_CYCLES;
+            int run_cycles_val;
+            if (strlen(args) == 0) {
+                printf("Running V30 (Logging IO, Infinite cycles). Press any key to stop...\n");
+                cycle_limit = 0x7FFFFFFF; // Infinite cycles
+                run_cycles_val = 0; // Indicate infinite run, not used for loop directly
+            } else {
+                run_cycles_val = strtol(args, NULL, 10);
+                if (run_cycles_val == 0) { // Explicitly set 0 for infinite
+                    printf("Running V30 (Logging IO, Infinite cycles). Press any key to stop...\n");
+                    cycle_limit = 0x7FFFFFFF; // Infinite cycles
+                } else if (run_cycles_val < 0 || run_cycles_val > MAX_CYCLES) {
+                    printf("Invalid cycle count (%d). Using default %d.\n", run_cycles_val, MAX_CYCLES);
+                    cycle_limit = MAX_CYCLES;
+                } else {
+                    printf("Running V30 (Logging IO %d cycles)...\n", run_cycles_val);
+                    cycle_limit = run_cycles_val;
                 }
             }
-            printf("Running V30 (Logging IO %d cycles)...\n", run_cycles);
             memset(trace_log, 0, sizeof(trace_log));
-            cycle_limit = run_cycles;
-            multicore_fifo_push_blocking(CMD_IOLOG_RUN);
+            multicore_fifo_push_blocking(CMD_RUN_IOLOG);
             multicore_fifo_pop_blocking();
             int cycles = executed_cycles;
             int time_us = execution_time_us; // Read execution time
@@ -1119,7 +1152,7 @@ int main() {
                 printf("[AUTOTEST] Receive success. Running test...\n"); fflush(stdout);
                 memset(trace_log, 0, sizeof(trace_log));
                 cycle_limit = MAX_CYCLES;
-                multicore_fifo_push_blocking(CMD_LOG_RUN);
+                multicore_fifo_push_blocking(CMD_RUN_FULLLOG);
                 printf("[AUTOTEST] Waiting for Core1 to complete...\n"); fflush(stdout);
                 multicore_fifo_pop_blocking();
                 int bus_cycles_executed = executed_cycles;
