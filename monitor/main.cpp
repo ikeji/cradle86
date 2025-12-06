@@ -187,6 +187,7 @@ void setup_clock(uint32_t freq_hz) {
 // ==========================================
 #define CMD_LOG_RUN  1
 #define CMD_FAST_RUN 2
+#define CMD_IOLOG_RUN 3
 
 /**
  * @brief Core 1のエントリポイント。V30バスサイクルをエミュレートし、Core 0からのコマンドを処理します。
@@ -214,8 +215,9 @@ void core1_entry() {
 
         gpio_put(PIN_RESET, 1); sleep_ms(1); gpio_put(PIN_RESET, 0);
 
-        int cycles = 0;
-        bool logging = (command == CMD_LOG_RUN);
+        int logged_cycles = 0;
+        int bus_cycles = 0;
+        bool logging = (command == CMD_LOG_RUN || command == CMD_IOLOG_RUN);
         bool infinite = (command == CMD_FAST_RUN);
         int local_limit = 0;
 
@@ -224,7 +226,7 @@ void core1_entry() {
         }
 
         while (true) {
-            if (logging && cycles >= local_limit) break;
+            if (logging && bus_cycles >= local_limit) break;
             if (infinite && stop_request) break;
             if (!logging && !infinite) break; // Exit for unknown commands
 
@@ -237,7 +239,7 @@ void core1_entry() {
                 }
             }
             if (!ale_detected) {
-                break; // Break from main cycle loop
+                break; // Break from the bus sniffing loop if ALE is not detected within timeout (V30 inactive)
             }
 
             uint32_t addr = read_addr();
@@ -270,8 +272,12 @@ void core1_entry() {
                     write_data(out_data);
 
                     if (logging) {
-                        uint8_t ctrl_flags = (pins & (1u << PIN_BHE)) ? 0 : 1; // 1 if BHE is low
-                        trace_log[cycles] = {addr, out_data, (uint8_t)(is_io ? LOG_IO_RD : LOG_MEM_RD), ctrl_flags};
+                        bool should_log = (command == CMD_LOG_RUN) || (command == CMD_IOLOG_RUN && is_io);
+                        if (should_log) {
+                            uint8_t ctrl_flags = (pins & (1u << PIN_BHE)) ? 0 : 1; // 1 if BHE is low
+                            trace_log[logged_cycles] = {addr, out_data, (uint8_t)(is_io ? LOG_IO_RD : LOG_MEM_RD), ctrl_flags};
+                            logged_cycles++;
+                        }
                     }
 
                     // Wait for RD to go high (no timeout requested here)
@@ -300,8 +306,12 @@ void core1_entry() {
                     }
 
                     if (logging) {
-                        uint8_t ctrl_flags = (pins & (1u << PIN_BHE)) ? 0 : 1; // 1 if BHE is low
-                        trace_log[cycles] = {addr, in_data, (uint8_t)(is_io ? LOG_IO_WR : LOG_MEM_WR), ctrl_flags};
+                        bool should_log = (command == CMD_LOG_RUN) || (command == CMD_IOLOG_RUN && is_io);
+                        if (should_log) {
+                            uint8_t ctrl_flags = (pins & (1u << PIN_BHE)) ? 0 : 1; // 1 if BHE is low
+                            trace_log[logged_cycles] = {addr, in_data, (uint8_t)(is_io ? LOG_IO_WR : LOG_MEM_WR), ctrl_flags};
+                            logged_cycles++;
+                        }
                     }
                     done_bus_cycle_op = true;
                 }
@@ -312,12 +322,18 @@ void core1_entry() {
                     break; // Break from done_bus_cycle_op loop
                 }
             }
-            if(done_bus_cycle_op) cycles++;
 
+            if (done_bus_cycle_op) {
+                bus_cycles++;
+            } else {
+                // The inner bus operation loop was broken (e.g. by timeout),
+                // so we break the main bus sniffing loop.
+                break;
+            }
         }
 
         gpio_put(PIN_RESET, 1);
-        executed_cycles = cycles;
+        executed_cycles = bus_cycles;
         multicore_fifo_push_blocking(1); // Notify Core 0 of completion
     }
 }
@@ -922,6 +938,7 @@ int main() {
             printf(" a <addr>       : Assemble interactively\n");
             printf(" l <addr> [len] : Disassemble\n");
             printf(" r [cycles]     : Run & Log for specified cycles (default %d)\n", MAX_CYCLES);
+            printf(" i [cycles]     : Run & Log IO only for specified cycles\n");
             printf(" g              : Run Loop (Key stop)\n");
             printf(" c <kHz>        : Set V30 clock speed\n");
             printf(" xr/xs          : XMODEM Recv/Send RAM\n");
@@ -1020,13 +1037,41 @@ int main() {
             multicore_fifo_push_blocking(CMD_LOG_RUN);
             multicore_fifo_pop_blocking();
             int cycles = executed_cycles;
-            printf("--- Log (%d cycles) ---\n", cycles);
+            printf("--- Log (%d bus cycles executed) ---\n", cycles);
             printf("ADDR  |B|TY|DATA\n");
-            for(int i=0; i<cycles; i++) {
-                const char *types[] = {"RD", "WR", "IR", "IW"};
-                // Type is now 1-based (0 is unused)
-                if (trace_log[i].type > 0 && trace_log[i].type <= 4) {
-                    printf("%05lX|%s|%s|%04X\n", trace_log[i].address, (trace_log[i].ctrl & 1 ? "B" : "-"), types[trace_log[i].type - 1], trace_log[i].data);
+            for(int i=0; i < MAX_CYCLES; i++) {
+                if (trace_log[i].type != LOG_UNUSED) {
+                    const char *types[] = {"RD", "WR", "IR", "IW"};
+                    // Type is now 1-based (0 is unused)
+                    if (trace_log[i].type > 0 && trace_log[i].type <= 4) {
+                        printf("%05lX|%s|%s|%04X\n", trace_log[i].address, (trace_log[i].ctrl & 1 ? "B" : "-"), types[trace_log[i].type - 1], trace_log[i].data);
+                    }
+                }
+            }
+        } else if (strcmp(cmd, "i") == 0) {
+            int run_cycles = MAX_CYCLES; // Default
+            if (strlen(args) > 0) {
+                run_cycles = strtol(args, NULL, 10);
+                if (run_cycles <= 0 || run_cycles > MAX_CYCLES) {
+                    printf("Invalid cycle count. Using default %d.\n", MAX_CYCLES);
+                    run_cycles = MAX_CYCLES;
+                }
+            }
+            printf("Running V30 (Logging IO %d cycles)...\n", run_cycles);
+            memset(trace_log, 0, sizeof(trace_log));
+            cycle_limit = run_cycles;
+            multicore_fifo_push_blocking(CMD_IOLOG_RUN);
+            multicore_fifo_pop_blocking();
+            int cycles = executed_cycles;
+            printf("--- IO Log (%d bus cycles executed) ---\n", cycles);
+            printf("ADDR  |B|TY|DATA\n");
+            for(int i=0; i < MAX_CYCLES; i++) {
+                if (trace_log[i].type != LOG_UNUSED) {
+                    const char *types[] = {"RD", "WR", "IR", "IW"};
+                    // Type is now 1-based (0 is unused)
+                    if (trace_log[i].type > 0 && trace_log[i].type <= 4) {
+                        printf("%05lX|%s|%s|%04X\n", trace_log[i].address, (trace_log[i].ctrl & 1 ? "B" : "-"), types[trace_log[i].type - 1], trace_log[i].data);
+                    }
                 }
             }
         } else if (strcmp(cmd, "xr") == 0) {
@@ -1068,21 +1113,29 @@ int main() {
                 multicore_fifo_push_blocking(CMD_LOG_RUN);
                 printf("[AUTOTEST] Waiting for Core1 to complete...\n"); fflush(stdout);
                 multicore_fifo_pop_blocking();
-                int cycles = executed_cycles;
-                printf("[AUTOTEST] Core1 finished. Cycles: %d\n", cycles); fflush(stdout);
+                int bus_cycles_executed = executed_cycles;
+                printf("[AUTOTEST] Core1 finished. Bus Cycles: %d\n", bus_cycles_executed); fflush(stdout);
+                
+                // Count the number of valid log entries
+                int valid_log_entries = 0;
+                for (int i = 0; i < MAX_CYCLES; i++) {
+                    if (trace_log[i].type != LOG_UNUSED) {
+                        valid_log_entries++;
+                    }
+                }
                 
                 // Give receiver a moment to get ready
                 sleep_ms(500);
 
-                if (cycles > 0) {
-                    printf("[AUTOTEST] Sending log data (%d bytes)...\n", cycles * (int)sizeof(BusLog)); fflush(stdout);
-                    if (!xmodem_send((uint8_t*)trace_log, cycles * sizeof(BusLog))) {
+                if (valid_log_entries > 0) {
+                    printf("[AUTOTEST] Sending log data (%d entries, %d bytes)...\n", valid_log_entries, valid_log_entries * (int)sizeof(BusLog)); fflush(stdout);
+                    if (!xmodem_send((uint8_t*)trace_log, valid_log_entries * sizeof(BusLog))) {
                         printf("[AUTOTEST] Failed to send log data.\n"); fflush(stdout);
                     }
                 } else {
                     printf("[AUTOTEST] No log data to send.\n"); fflush(stdout);
                 }
-                printf("\nDone. Cycles: %d\n", cycles); fflush(stdout);
+                printf("\nDone. Bus Cycles: %d, Log Entries: %d\n", bus_cycles_executed, valid_log_entries); fflush(stdout);
             } else {
                 printf("[AUTOTEST] Aborting: Failed to receive test binary.\n"); fflush(stdout);
             }
