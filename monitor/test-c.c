@@ -25,12 +25,20 @@ void out(unsigned char value){
   asm("out 5, al");
 }
 
+
+unsigned short delay(){
+  unsigned short i=0,j=0;
+  while(++i>0)j+=i;
+  return j;
+}
+
 // Main C logic, same as before.
 void main() {
   // Declare all variables at the top of the function.
   unsigned char a;
   unsigned char b;
   unsigned char c;
+  unsigned char d;
 
   // Assign values to the variables.
   a = 1;
@@ -40,6 +48,10 @@ void main() {
   c = a + b;
 
   out(c);
+
+  d = delay();
+
+  out(d);
 
   hlt();
 }
