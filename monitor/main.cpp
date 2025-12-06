@@ -60,6 +60,7 @@ volatile bool stop_request = false;
 
 volatile int cycle_limit;
 volatile int executed_cycles;
+volatile int execution_time_us;
 
 // --- Clock Config ---
 struct FreqSetting {
@@ -213,6 +214,8 @@ void core1_entry() {
         uint32_t command = multicore_fifo_pop_blocking();
         stop_request = false;
 
+        absolute_time_t start_time = get_absolute_time(); // Start timing here
+
         gpio_put(PIN_RESET, 1); sleep_ms(1); gpio_put(PIN_RESET, 0);
 
         int logged_cycles = 0;
@@ -331,6 +334,9 @@ void core1_entry() {
                 break;
             }
         }
+
+        absolute_time_t end_time = get_absolute_time();
+        execution_time_us = absolute_time_diff_us(start_time, end_time); // Store execution time
 
         gpio_put(PIN_RESET, 1);
         executed_cycles = bus_cycles;
@@ -998,7 +1004,8 @@ int main() {
             multicore_fifo_push_blocking(CMD_FAST_RUN);
             getchar(); stop_request = true;
             multicore_fifo_pop_blocking(); // Wait for completion signal
-            printf("Stopped.\n");
+            int time_us = execution_time_us; // Read execution time
+            printf("Stopped. (%d us)\n", time_us);
         } else if (strcmp(cmd, "c") == 0) {
             if (!args || strlen(args) == 0) {
                 printf("Usage: c <freq_khz>\n");
@@ -1037,7 +1044,8 @@ int main() {
             multicore_fifo_push_blocking(CMD_LOG_RUN);
             multicore_fifo_pop_blocking();
             int cycles = executed_cycles;
-            printf("--- Log (%d bus cycles executed) ---\n", cycles);
+            int time_us = execution_time_us; // Read execution time
+            printf("--- Log (%d bus cycles executed, %d us) ---\n", cycles, time_us);
             printf("ADDR  |B|TY|DATA\n");
             for(int i=0; i < MAX_CYCLES; i++) {
                 if (trace_log[i].type != LOG_UNUSED) {
@@ -1063,7 +1071,8 @@ int main() {
             multicore_fifo_push_blocking(CMD_IOLOG_RUN);
             multicore_fifo_pop_blocking();
             int cycles = executed_cycles;
-            printf("--- IO Log (%d bus cycles executed) ---\n", cycles);
+            int time_us = execution_time_us; // Read execution time
+            printf("--- IO Log (%d bus cycles executed, %d us) ---\n", cycles, time_us);
             printf("ADDR  |B|TY|DATA\n");
             for(int i=0; i < MAX_CYCLES; i++) {
                 if (trace_log[i].type != LOG_UNUSED) {
@@ -1114,7 +1123,8 @@ int main() {
                 printf("[AUTOTEST] Waiting for Core1 to complete...\n"); fflush(stdout);
                 multicore_fifo_pop_blocking();
                 int bus_cycles_executed = executed_cycles;
-                printf("[AUTOTEST] Core1 finished. Bus Cycles: %d\n", bus_cycles_executed); fflush(stdout);
+                int time_us = execution_time_us; // Read execution time
+                printf("[AUTOTEST] Core1 finished. Bus Cycles: %d, Time: %d us\n", bus_cycles_executed, time_us); fflush(stdout);
                 
                 // Count the number of valid log entries
                 int valid_log_entries = 0;
@@ -1135,7 +1145,7 @@ int main() {
                 } else {
                     printf("[AUTOTEST] No log data to send.\n"); fflush(stdout);
                 }
-                printf("\nDone. Bus Cycles: %d, Log Entries: %d\n", bus_cycles_executed, valid_log_entries); fflush(stdout);
+                printf("\nDone. Bus Cycles: %d, Log Entries: %d, Time: %d us\n", bus_cycles_executed, valid_log_entries, time_us); fflush(stdout);
             } else {
                 printf("[AUTOTEST] Aborting: Failed to receive test binary.\n"); fflush(stdout);
             }
