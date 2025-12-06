@@ -32,7 +32,13 @@ test-flash: $(TARGET_BIN)
 	@sx -b $(TARGET_BIN) > $(PORT) < $(PORT)
 	@echo ">>> XMODEM Transfer complete for $(TARGET_BIN)."
 
-.PHONY: all run clean flash demo test-flash test-retrieverun-c disasm-asm disasm-c
+test-flash-c: $(TARGET_C_BIN)
+	@echo ">>> Sending $(TARGET_C_BIN) to $(PORT) via XMODEM..."
+	@./run-xr.exp $(PORT)
+	@sx -b $(TARGET_C_BIN) > $(PORT) < $(PORT)
+	@echo ">>> XMODEM Transfer complete for $(TARGET_C_BIN)."
+
+.PHONY: all run clean flash demo test-flash test-flash-c test-retrieverun-c disasm-asm disasm-c
 
 # --- Disassembly Targets ---
 disasm-asm: $(TARGET_BIN)
