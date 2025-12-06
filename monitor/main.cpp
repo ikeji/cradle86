@@ -55,8 +55,11 @@ struct __attribute__((packed)) BusLog {
 // --- Globals ---
 uint8_t ram[RAM_SIZE];
 BusLog trace_log[MAX_CYCLES];
-volatile bool core1_running = false;
+
 volatile bool stop_request = false;
+
+volatile int cycle_limit;
+volatile int executed_cycles;
 
 // --- Clock Config ---
 struct FreqSetting {
@@ -206,23 +209,24 @@ void core1_entry() {
     gpio_put(PIN_RESET, 1);
 
     while (true) {
-        uint32_t raw_cmd = multicore_fifo_pop_blocking();
-        core1_running = true;
+        uint32_t command = multicore_fifo_pop_blocking();
         stop_request = false;
 
         gpio_put(PIN_RESET, 1); sleep_ms(1); gpio_put(PIN_RESET, 0);
 
         int cycles = 0;
-        bool logging = ((raw_cmd & 0x3) == CMD_LOG_RUN); // Use lower 2 bits for command type
-        bool infinite = ((raw_cmd & 0x3) == CMD_FAST_RUN);
-        int cycle_limit = (raw_cmd >> 2); // Extract cycle limit from higher bits
+        bool logging = (command == CMD_LOG_RUN);
+        bool infinite = (command == CMD_FAST_RUN);
+        int local_limit = 0;
 
-        // If not logging or infinite, cycle_limit will be 0, meaning use MAX_CYCLES (or some other default)
-        if (!logging && !infinite) cycle_limit = MAX_CYCLES; // Fallback for commands without explicit cycle count
+        if (logging) {
+            local_limit = cycle_limit;
+        }
 
         while (true) {
-            if (!infinite && cycles >= cycle_limit) break;
+            if (logging && cycles >= local_limit) break;
             if (infinite && stop_request) break;
+            if (!logging && !infinite) break; // Exit for unknown commands
 
             absolute_time_t t_start_ale = get_absolute_time();
             bool ale_detected = false;
@@ -313,8 +317,8 @@ void core1_entry() {
         }
 
         gpio_put(PIN_RESET, 1);
-        core1_running = false;
-        multicore_fifo_push_blocking(cycles);
+        executed_cycles = cycles;
+        multicore_fifo_push_blocking(1); // Notify Core 0 of completion
     }
 }
 
@@ -972,11 +976,12 @@ int main() {
                 }
             }
         }
-        else if (strcmp(cmd, "l") == 0) cmd_disasm(args);
         else if (strcmp(cmd, "g") == 0) {
             printf("Running V30 (No Log). Press any key to stop...\n");
-            multicore_fifo_push_blocking(CMD_FAST_RUN); getchar(); stop_request = true;
-            multicore_fifo_pop_blocking(); printf("Stopped.\n");
+            multicore_fifo_push_blocking(CMD_FAST_RUN);
+            getchar(); stop_request = true;
+            multicore_fifo_pop_blocking(); // Wait for completion signal
+            printf("Stopped.\n");
         } else if (strcmp(cmd, "c") == 0) {
             if (!args || strlen(args) == 0) {
                 printf("Usage: c <freq_khz>\n");
@@ -1011,8 +1016,10 @@ int main() {
             }
             printf("Running V30 (Logging %d cycles)...\n", run_cycles);
             memset(trace_log, 0, sizeof(trace_log));
-            multicore_fifo_push_blocking(CMD_LOG_RUN | (run_cycles << 2)); // Use lower 2 bits for CMD_LOG_RUN, rest for cycles
-            int cycles = multicore_fifo_pop_blocking();
+            cycle_limit = run_cycles;
+            multicore_fifo_push_blocking(CMD_LOG_RUN);
+            multicore_fifo_pop_blocking();
+            int cycles = executed_cycles;
             printf("--- Log (%d cycles) ---\n", cycles);
             printf("ADDR  |B|TY|DATA\n");
             for(int i=0; i<cycles; i++) {
@@ -1057,9 +1064,11 @@ int main() {
             if (xmodem_receive(ram, RAM_SIZE)) {
                 printf("[AUTOTEST] Receive success. Running test...\n"); fflush(stdout);
                 memset(trace_log, 0, sizeof(trace_log));
-                multicore_fifo_push_blocking(CMD_LOG_RUN | (MAX_CYCLES << 2));
+                cycle_limit = MAX_CYCLES;
+                multicore_fifo_push_blocking(CMD_LOG_RUN);
                 printf("[AUTOTEST] Waiting for Core1 to complete...\n"); fflush(stdout);
-                int cycles = multicore_fifo_pop_blocking();
+                multicore_fifo_pop_blocking();
+                int cycles = executed_cycles;
                 printf("[AUTOTEST] Core1 finished. Cycles: %d\n", cycles); fflush(stdout);
                 
                 // Give receiver a moment to get ready
