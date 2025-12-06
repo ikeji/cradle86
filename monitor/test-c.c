@@ -18,11 +18,18 @@ void hlt(){
   asm("hlt");
 }
 
-unsigned char mem;
+unsigned char out_mem;
 void out(unsigned char value){
-  mem = value;
-  asm("mov al, _mem");
+  out_mem = value;
+  asm("mov al, _out_mem");
   asm("out 5, al");
+}
+
+unsigned short outw_mem;
+void outw(unsigned short value) {
+  outw_mem = value;
+  asm("mov ax, _outw_mem");
+  asm("out 5, ax");
 }
 
 
@@ -38,7 +45,7 @@ void main() {
   unsigned char a;
   unsigned char b;
   unsigned char c;
-  unsigned char d;
+  unsigned short d;
 
   // Assign values to the variables.
   a = 1;
@@ -51,7 +58,7 @@ void main() {
 
   d = delay();
 
-  out(d);
+  outw(d);
 
   hlt();
 }
