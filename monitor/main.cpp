@@ -1145,29 +1145,39 @@ int main() {
         }
       }
     } else if (strcmp(cmd, "r") == 0) {
-      int run_cycles_val;
-      if (strlen(args) == 0) {
+      int run_cycles_val = (strlen(args) > 0) ? strtol(args, NULL, 10) : 0;
+      bool is_infinite = (run_cycles_val == 0);
+
+      if (is_infinite) {
         printf("Running V30 (Logging, Infinite cycles). Press any key to "
-               "stop...\n");      // Added message for infinite run
-        cycle_limit = 0x7FFFFFFF; // Infinite cycles
-        run_cycles_val = 0; // Indicate infinite run, not used for loop directly
+               "stop...\n");
+        cycle_limit = 0x7FFFFFFF;
+      } else if (run_cycles_val < 0 || run_cycles_val > MAX_CYCLES) {
+        printf("Invalid cycle count (%d). Using default %d.\n",
+               run_cycles_val, MAX_CYCLES);
+        cycle_limit = MAX_CYCLES;
       } else {
-        run_cycles_val = strtol(args, NULL, 10);
-        if (run_cycles_val == 0) { // Explicitly set 0 for infinite
-          printf("Running V30 (Logging, Infinite cycles). Press any key to "
-                 "stop...\n");
-          cycle_limit = 0x7FFFFFFF; // Infinite cycles
-        } else if (run_cycles_val < 0 || run_cycles_val > MAX_CYCLES) {
-          printf("Invalid cycle count (%d). Using default %d.\n",
-                 run_cycles_val, MAX_CYCLES);
-          cycle_limit = MAX_CYCLES;
-        } else {
-          printf("Running V30 (Logging %d cycles)...\n", run_cycles_val);
-          cycle_limit = run_cycles_val;
-        }
+        printf("Running V30 (Logging %d cycles)...\n", run_cycles_val);
+        cycle_limit = run_cycles_val;
       }
+
       memset(trace_log, 0, sizeof(trace_log));
       multicore_fifo_push_blocking(CMD_RUN_FULLLOG);
+
+      if (is_infinite) {
+        while (true) {
+          // Check if core 1 has finished on its own (e.g. log full, timeout)
+          if (multicore_fifo_rvalid()) {
+            break;
+          }
+          // Check if user has pressed a key to stop
+          if (getchar_timeout_us(10000) != PICO_ERROR_TIMEOUT) {
+            stop_request = true;
+            break;
+          }
+        }
+      }
+
       multicore_fifo_pop_blocking();
       int cycles = executed_cycles;
       int time_us = execution_time_us; // Read execution time
@@ -1185,29 +1195,38 @@ int main() {
         }
       }
     } else if (strcmp(cmd, "i") == 0) {
-      int run_cycles_val;
-      if (strlen(args) == 0) {
+      int run_cycles_val = (strlen(args) > 0) ? strtol(args, NULL, 10) : 0;
+      bool is_infinite = (run_cycles_val == 0);
+
+      if (is_infinite) {
         printf("Running V30 (Logging IO, Infinite cycles). Press any key to "
                "stop...\n");
-        cycle_limit = 0x7FFFFFFF; // Infinite cycles
-        run_cycles_val = 0; // Indicate infinite run, not used for loop directly
+        cycle_limit = 0x7FFFFFFF;
+      } else if (run_cycles_val < 0 || run_cycles_val > MAX_CYCLES) {
+        printf("Invalid cycle count (%d). Using default %d.\n",
+               run_cycles_val, MAX_CYCLES);
+        cycle_limit = MAX_CYCLES;
       } else {
-        run_cycles_val = strtol(args, NULL, 10);
-        if (run_cycles_val == 0) { // Explicitly set 0 for infinite
-          printf("Running V30 (Logging IO, Infinite cycles). Press any key to "
-                 "stop...\n");
-          cycle_limit = 0x7FFFFFFF; // Infinite cycles
-        } else if (run_cycles_val < 0 || run_cycles_val > MAX_CYCLES) {
-          printf("Invalid cycle count (%d). Using default %d.\n",
-                 run_cycles_val, MAX_CYCLES);
-          cycle_limit = MAX_CYCLES;
-        } else {
-          printf("Running V30 (Logging IO %d cycles)...\n", run_cycles_val);
-          cycle_limit = run_cycles_val;
-        }
+        printf("Running V30 (Logging IO %d cycles)...\n", run_cycles_val);
+        cycle_limit = run_cycles_val;
       }
       memset(trace_log, 0, sizeof(trace_log));
       multicore_fifo_push_blocking(CMD_RUN_IOLOG);
+
+      if (is_infinite) {
+        while (true) {
+          // Check if core 1 has finished on its own (e.g. log full, timeout)
+          if (multicore_fifo_rvalid()) {
+            break;
+          }
+          // Check if user has pressed a key to stop
+          if (getchar_timeout_us(10000) != PICO_ERROR_TIMEOUT) {
+            stop_request = true;
+            break;
+          }
+        }
+      }
+
       multicore_fifo_pop_blocking();
       int cycles = executed_cycles;
       int time_us = execution_time_us; // Read execution time
@@ -1278,7 +1297,7 @@ int main() {
         printf("[AUTOTEST] Receive success. Running test...\n");
         fflush(stdout);
         memset(trace_log, 0, sizeof(trace_log));
-        cycle_limit = MAX_CYCLES;
+        cycle_limit = 0x7FFFFFFF; // Infinite cycles
         multicore_fifo_push_blocking(run_cmd);
         printf("[AUTOTEST] Waiting for Core1 to complete...\n");
         fflush(stdout);
