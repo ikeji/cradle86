@@ -67,8 +67,13 @@ $(TARGET_C_BIN): $(SRC_C) $(RESET_VEC_BIN)
 
 # Build and run the test cycle with the C binary
 run-c: $(TARGET_C_BIN)
-	@echo "--- Starting Test Runner with C binary ---"
-	$(PYTHON) $(RUNNER) --port $(PORT) --binfile $(TARGET_C_BIN)
+	@echo "--- Starting Test Runner with C binary (Full Log Mode) ---"
+	$(PYTHON) $(RUNNER) --port $(PORT) --binfile $(TARGET_C_BIN) --mode full
+
+# Build and run the test cycle with the C binary in IO-log mode
+run-io-c: $(TARGET_C_BIN)
+	@echo "--- Starting Test Runner with C binary (I/O Log Mode) ---"
+	$(PYTHON) $(RUNNER) --port $(PORT) --binfile $(TARGET_C_BIN) --mode io
 
 
 # --- Test Retrieve Target ---
@@ -92,8 +97,8 @@ $(TARGET_BIN): $(SRC_ASM)
 
 # Build and run the full test cycle: upload binary, execute on Pico, get log back
 run: $(TARGET_BIN)
-	@echo "--- Starting Test Runner ---"
-	$(PYTHON) $(RUNNER) --port $(PORT) --binfile $(TARGET_BIN)
+	@echo "--- Starting Test Runner (Full Log Mode) ---"
+	$(PYTHON) $(RUNNER) --port $(PORT) --binfile $(TARGET_BIN) --mode full
 
 # Clean up build artifacts from both the test program and the firmware
 clean:

@@ -1048,7 +1048,7 @@ int main() {
       printf(" xr/xs          : XMODEM Recv/Send RAM\n");
       printf(" xl             : XMODEM Send Log\n");
       printf(" v              : Version\n");
-      printf(" autotest       : Full auto test (Rx -> Run -> Tx Log)\n");
+      printf(" autotest [io]  : Full auto test (Rx -> Run -> Tx Log)\n");
     } else if (strcmp(cmd, "d") == 0)
       cmd_dump(args);
     else if (strcmp(cmd, "e") == 0)
@@ -1255,6 +1255,21 @@ int main() {
     } else if (strcmp(cmd, "v") == 0)
       printf("Ver: %s, RAM: %dKB\n", VERSION_STR, RAM_SIZE / 1024);
     else if (strcmp(cmd, "autotest") == 0) {
+      // Trim leading whitespace from args
+      const char *args_ptr = args;
+      while (*args_ptr && isspace((unsigned char)*args_ptr)) {
+        args_ptr++;
+      }
+
+      uint32_t run_cmd = CMD_RUN_FULLLOG;
+      if (strcmp(args_ptr, "io") == 0) {
+        run_cmd = CMD_RUN_IOLOG;
+        printf("[AUTOTEST] Mode: I/O Log\n");
+      } else {
+        printf("[AUTOTEST] Mode: Full Log\n");
+      }
+      fflush(stdout);
+
       printf("[AUTOTEST] Receiving test binary...\n");
       fflush(stdout);
       if (xmodem_receive(ram, RAM_SIZE)) {
@@ -1262,7 +1277,7 @@ int main() {
         fflush(stdout);
         memset(trace_log, 0, sizeof(trace_log));
         cycle_limit = MAX_CYCLES;
-        multicore_fifo_push_blocking(CMD_RUN_FULLLOG);
+        multicore_fifo_push_blocking(run_cmd);
         printf("[AUTOTEST] Waiting for Core1 to complete...\n");
         fflush(stdout);
         multicore_fifo_pop_blocking();

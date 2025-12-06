@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--port', default='/dev/ttyACM0', help='Serial port for the Pico')
     parser.add_argument('--baud', default=115200, type=int, help='Serial baud rate')
     parser.add_argument('--binfile', required=True, help='V30 binary file to upload')
+    parser.add_argument('--mode', default='full', choices=['full', 'io'], help='Logging mode for autotest (full or io)')
     args = parser.parse_args()
 
     try:
@@ -34,9 +35,14 @@ def main():
 
     # 1. Send 'autotest' command to Pico
     ser.reset_input_buffer()
-    ser.write(b'\r\nautotest\r\n')
+    if args.mode == 'io':
+        command = b'\r\nautotest io\r\n'
+        print(">>> Sent 'autotest io' command. Waiting for Pico to be ready...")
+    else:
+        command = b'\r\nautotest\r\n'
+        print(">>> Sent 'autotest' command. Waiting for Pico to be ready...")
+    ser.write(command)
     ser.flush()
-    print(">>> Sent 'autotest' command. Waiting for Pico to be ready...")
 
     # Wait for the specific "Ready to RECEIVE" message from the Pico
     # to ensure it's in the correct state.
@@ -44,9 +50,9 @@ def main():
     full_response = b""
     # Set a timeout for the initial readiness check
     original_timeout = ser.timeout
-    ser.timeout = 2 # 2-second timeout for readline
+    ser.timeout = 1 # 1-second timeout for readline
 
-    for i in range(5): # Total timeout ~10s
+    for i in range(10): # Total timeout ~10s
         line = ser.readline()
         if line:
             # Print for debugging purposes
