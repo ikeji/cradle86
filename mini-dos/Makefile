@@ -38,17 +38,7 @@ $(MINIDOS_IMG): $(KERNEL_SRC) $(COMMAND_COM)
 
 # Run with QEMU
 run: $(FINAL_IMAGE)
-	timeout 5s qemu-system-i386 \
-		-drive format=raw,file=$(FINAL_IMAGE) \
-		-serial stdio \
-		-monitor none \
-		-display none \
-		-device isa-debug-exit,iobase=0x501,iosize=1 ; \
-	status=$$? ; \
-	code=$$((status >> 1)) ; \
-	echo "QEMU exit raw=$$status decoded=$$code" ; \
-	exit $$code
-
+	./run-qemu.sh
 # Clean up
 clean:
 	rm -f $(BOOT_BIN) boot.lst $(MINIDOS_IMG) mini-dos.lst $(FINAL_IMAGE) qemu.log
