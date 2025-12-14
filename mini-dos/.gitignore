@@ -1,0 +1,7 @@
+# Build artifacts
+*.bin
+*.lst
+*.img
+
+# Log files
+*.log
