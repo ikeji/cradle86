@@ -13,22 +13,20 @@ import os
 LOG_FILE = "qemu.log"
 
 DECODE_MAP = {
-    'B': "Booting MBR",
-    '1': "Start relocating",
-    '2': "Finish relocating",
-    'S': "Booting relocated MBR",
-    'L': "Check discs",
-    'R': "Read sectors",
-    '4': "Disk Read Error",
-    'C': "Continue/Another code for disk operation",
-    'E': "Execution failed",
-    'F': "Formatting disk",
-    '0': "Success (or other code 0)", # このエントリは、新しいロジックではコードとして扱われるため、直接デコードマップには含めない
-    'A': "Debug A",
-    'D': "Boot Drive Number",
-    'P': "Stack Segment High Byte",
-    'p': "Stack Segment Low Byte",
-    # Add more mappings as needed from the bootloader's output
+    "A":"Boot disk from bios",
+    "B":"Start MBR",
+    "C":"Relocated MBR",
+    "D":"Start relocated MBR",
+    "E":"Setup start segment",
+    "F":"Reset Disk",
+    "G":"Check status",
+    "H":"Read sector",
+    "I":"Relocate DOS",
+    "J":"Jump to DOS",
+    "Z":"",
+    "Z":"",
+    "r":"Return code",
+    "e":"Error code",
 }
 
 def main():

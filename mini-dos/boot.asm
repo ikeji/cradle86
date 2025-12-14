@@ -88,18 +88,17 @@ start:
 
     ; Log the boot drive number (which is in DL)
     mov al, dl
-    log_al 'D'
+    log_al 'A'
 
     log_char 'B'
     
-    log_char '1'
     mov ax, BOOTLOADER_RELOCATE_SEG
     mov es, ax
     xor di, di
     xor si, si ; Source is start of bootloader (0x7C00), which is offset 0 from CS
     mov cx, 256
     rep movsw
-    log_char '2'
+    log_char 'C'
 
     jmp BOOTLOADER_RELOCATE_SEG:(relocated_code - start)
 
@@ -107,7 +106,7 @@ start:
 ; This code runs from the new address (0x90000)
 ; ==============================================================================
 relocated_code:
-    log_char 'S'
+    log_char 'D'
     cli
     mov ax, BOOTLOADER_RELOCATE_SEG
     mov ds, ax
@@ -118,23 +117,29 @@ relocated_code:
 
     ; Log Stack Segment (SS)
     mov ax, ss
-    log_ax 'S'
+    log_ax 'E'
 
-    log_char 'L'
-    
     ; First, reset the disk system
+    log_char 'F'
     mov ah, 0x00
     mov dl, bh ; Use saved boot drive number
     int 0x13
-    mov cl, al ; Save AL from reset
-    mov al, cl ; Restore AL from CL for log_al
-    log_al 'R' ; Log Reset attempt and AL from reset
-    mov cl, 0x02 ; Restore CL for sector number
+    mov al, ah
+    log_al 'r' ; Log Reset attempt and AL from reset
+
+    ; Get result status
+    log_char 'G'
+    mov ah, 0x01
+    mov dl, bh ; Use saved boot drive number
+    int 0x13
+    mov al, ah
+    log_al 'r' ; Log Reset attempt and AL from status
 
     ; Now, try to read
+    log_char 'H'
     mov ah, 0x02
     mov al, MINIDOS_SECTORS_TO_READ
-    mov ch, 0
+    mov ch, 0 ; Cylinder
     mov cl, 2 ; Back to original sector 2
     mov dl, bh  ; Restore boot drive number from BH
     mov dh, 0   ; Set head number to 0
@@ -144,10 +149,11 @@ relocated_code:
     clc ; Clear carry flag before INT 13h call for safety
     int 0x13
     jc load_error
+    log_al 'e' ; Log error code in AL
+    mov al, ah
+    log_al 'e' ; Log error code in AL
 
-    log_char 'C'
-    
-    log_char 'M'
+    log_char 'I'
     mov ax, MINIDOS_TEMP_LOAD_SEG
     mov ds, ax
     mov si, MINIDOS_LOAD_OFF
@@ -156,7 +162,6 @@ relocated_code:
     mov di, MINIDOS_LOAD_OFF
     mov cx, 0 ; 0 means 65536 for rep movsw
     rep movsw
-    log_char 'D'
 
     mov ax, BOOTLOADER_RELOCATE_SEG
     mov ds, ax
@@ -167,7 +172,9 @@ relocated_code:
     retf
 
 load_error:
-    log_al 'E' ; Log error code in AL
+    log_al 'e' ; Log error code in AL
+    mov al, ah
+    log_al 'e' ; Log error code in AL
 .hang:
     hlt
     jmp .hang
