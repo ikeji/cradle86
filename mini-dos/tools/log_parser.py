@@ -25,6 +25,9 @@ DECODE_MAP = {
     'F': "Formatting disk",
     '0': "Success (or other code 0)", # このエントリは、新しいロジックではコードとして扱われるため、直接デコードマップには含めない
     'A': "Debug A",
+    'D': "Boot Drive Number",
+    'P': "Stack Segment High Byte",
+    'p': "Stack Segment Low Byte",
     # Add more mappings as needed from the bootloader's output
 }
 

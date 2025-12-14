@@ -52,9 +52,16 @@ start:
     ; Save the boot drive number passed by the BIOS in DL into BH for later use
     mov bh, dl
 
-    ; Set DS explicitly to ensure it points to 0x7C00
+    ; Initialize segment registers and stack before using stack-dependent macros
     mov ax, 0x07C0
     mov ds, ax
+    mov es, ax ; ES is also used before relocation by movsw
+    mov ss, ax ; Initialize SS
+    mov sp, STACK_PTR ; Initialize SP
+
+    ; Log the boot drive number (which is in DL)
+    mov al, dl
+    log_al 'D'
 
     log_char 'B'
     
@@ -78,9 +85,19 @@ relocated_code:
     mov ax, BOOTLOADER_RELOCATE_SEG
     mov ds, ax
     mov es, ax
-    mov ss, ax
-    mov sp, STACK_PTR
+    mov ss, ax ; Stack re-initialized to relocated segment
+    mov sp, STACK_PTR ; Stack re-initialized to relocated segment
     sti
+
+    ; Log Stack Segment (SS)
+    mov ax, ss
+    push ax ; Save AX as log_al uses AX
+    mov al, ah
+    log_al 'P' ; Log high byte of SS
+    pop ax ; Restore AX
+    push ax ; Save AX again
+    log_al 'p' ; Log low byte of SS
+    pop ax ; Restore AX
 
     log_char 'L'
     
