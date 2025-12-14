@@ -119,26 +119,26 @@ relocated_code:
     mov ax, ss
     log_ax 'E'
 
-    ; First, reset the disk system
-    log_char 'F'
-    mov ah, 0x00
-    mov dl, bh ; Use saved boot drive number
-    int 0x13
-    mov al, ah
-    log_al 'r' ; Log Reset attempt and AL from reset
+    ; ; First, reset the disk system
+    ; log_char 'F'
+    ; mov ah, 0x00
+    ; mov dl, bh ; Use saved boot drive number
+    ; int 0x13
+    ; mov al, ah
+    ; log_al 'r' ; Log Reset attempt and AL from reset
 
-    ; Get result status
-    log_char 'G'
-    mov ah, 0x01
-    mov dl, bh ; Use saved boot drive number
-    int 0x13
-    mov al, ah
-    log_al 'r' ; Log Reset attempt and AL from status
+    ; ; Get result status
+    ; log_char 'G'
+    ; mov ah, 0x01
+    ; mov dl, bh ; Use saved boot drive number
+    ; int 0x13
+    ; mov al, ah
+    ; log_al 'r' ; Log Reset attempt and AL from status
 
     ; Now, try to read
     log_char 'H'
     mov ah, 0x02
-    mov al, MINIDOS_SECTORS_TO_READ
+    mov al, 0x80
     mov ch, 0 ; Cylinder
     mov cl, 2 ; Back to original sector 2
     mov dl, bh  ; Restore boot drive number from BH
@@ -149,11 +149,43 @@ relocated_code:
     clc ; Clear carry flag before INT 13h call for safety
     int 0x13
     jc load_error
-    log_al 'e' ; Log error code in AL
+    log_al 's' ; Log error code in AL
     mov al, ah
-    log_al 'e' ; Log error code in AL
+    log_al 's' ; Log error code in AL
+
+    ; ; Get result status
+    ; log_char 'G'
+    ; mov ah, 0x01
+    ; mov dl, bh ; Use saved boot drive number
+    ; int 0x13
+    ; mov al, ah
+    ; log_al 'r' ; Log Reset attempt and AL from status
 
     log_char 'I'
+    mov ah, 0x02
+    mov al, 0x80
+    mov ch, 0
+    mov cl, 2
+    mov dh, 0   ; Set head number to 0
+    mov bx, MINIDOS_TEMP_LOAD_SEG
+    mov es, bx
+    mov bx, MINIDOS_LOAD_OFF
+    clc ; Clear carry flag before INT 13h call for safety
+    int 0x13
+    jc load_error
+    log_al 's' ; Log error code in AL
+    mov al, ah
+    log_al 's' ; Log error code in AL
+
+    ; Get result status
+    log_char 'G'
+    mov ah, 0x01
+    mov dl, bh ; Use saved boot drive number
+    int 0x13
+    mov al, ah
+    log_al 'r' ; Log Reset attempt and AL from status
+
+    log_char 'J'
     mov ax, MINIDOS_TEMP_LOAD_SEG
     mov ds, ax
     mov si, MINIDOS_LOAD_OFF
@@ -166,7 +198,7 @@ relocated_code:
     mov ax, BOOTLOADER_RELOCATE_SEG
     mov ds, ax
 
-    log_char 'J'
+    log_char 'K'
     push word OS_JUMP_SEG
     push word OS_JUMP_OFF
     retf

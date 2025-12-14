@@ -21,12 +21,14 @@ DECODE_MAP = {
     "F":"Reset Disk",
     "G":"Check status",
     "H":"Read sector",
-    "I":"Relocate DOS",
-    "J":"Jump to DOS",
+    "I":"Read sector2",
+    "J":"Relocate DOS",
+    "K":"Jump to DOS",
     "Z":"",
     "Z":"",
     "r":"Return code",
     "e":"Error code",
+    "s":"Success code",
 }
 
 def main():
