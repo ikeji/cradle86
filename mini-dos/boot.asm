@@ -21,6 +21,28 @@ OS_JUMP_OFF             equ 0x0000
     pop ax
 %endmacro
 
+%macro log_al 1
+    push ax                 ; 呼び出し元のaxを保護
+    push cx                 ; 呼び出し元のcxを保護
+
+    ; 呼び出し時点のALの値をCLに一時保存
+    mov cl, al
+
+    ; 1. 引数の文字を出力
+    mov al, %1              ; 引数の文字をALにロード
+    call print_al_char      ; 文字を出力
+
+    ; 2. 保存しておいたALの値を16進数で出力
+    mov al, cl              ; 保存しておいたALの値をALに戻す
+    call print_hex_byte     ; ALの中身を16進数で出力
+
+    ; 3. 改行を送信
+    call print_crlf
+
+    pop cx                  ; cxを復元
+    pop ax                  ; axを復元
+%endmacro
+
 org 0x7C00
 
 ; ==============================================================================
@@ -67,10 +89,8 @@ relocated_code:
     mov dl, bh ; Use saved boot drive number
     int 0x13
     mov cl, al ; Save AL from reset
-    log_char 'R' ; Log Reset attempt
-    mov al, cl
-    call print_hex_byte ; Print reset status
-    call print_crlf
+    mov al, cl ; Restore AL from CL for log_al
+    log_al 'R' ; Log Reset attempt and AL from reset
     mov cl, 0x02 ; Restore CL for sector number
 
     ; Now, try to read
@@ -109,11 +129,7 @@ relocated_code:
     retf
 
 load_error:
-    mov cl, al      ; Save error code in CL
-    log_char 'E'
-    mov al, cl      ; Restore error code to AL
-    call print_hex_byte
-    call print_crlf
+    log_al 'E' ; Log error code in AL
 .hang:
     hlt
     jmp .hang

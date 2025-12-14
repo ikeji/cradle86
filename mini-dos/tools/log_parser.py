@@ -19,11 +19,12 @@ DECODE_MAP = {
     'S': "Booting relocated MBR",
     'L': "Check discs",
     'R': "Read sectors",
-    '4': "Disk Read Error", # Assuming '4C' means '4' followed by 'C' (Continue or another code)
+    '4': "Disk Read Error",
     'C': "Continue/Another code for disk operation",
     'E': "Execution failed",
     'F': "Formatting disk",
-    '0': "Success (or other code 0)",
+    '0': "Success (or other code 0)", # このエントリは、新しいロジックではコードとして扱われるため、直接デコードマップには含めない
+    'A': "Debug A",
     # Add more mappings as needed from the bootloader's output
 }
 
@@ -41,14 +42,25 @@ def main():
             if not log_content:
                 print("(empty log)")
             else:
-                for line in log_content.splitlines(): # 改行ごとに分割
-                    line = line.strip() # 行の先頭と末尾の空白文字を削除
-                    if not line: # 空行はスキップ
+                for line_content in log_content.splitlines(): # 改行ごとに分割
+                    line_content = line_content.strip() # 行の先頭と末尾の空白文字を削除
+                    if not line_content: # 空行はスキップ
                         continue
                     
-                    for char in line: # 行内の全ての文字をデコード対象とする
-                        decoded_message = DECODE_MAP.get(char, f"Unknown code: {char}")
-                        print(f"{char}: {decoded_message}")
+                    log_type = line_content[0]
+                    log_code = line_content[1:] # 種類に続く残りの文字列をコードとする
+
+                    type_description = DECODE_MAP.get(log_type, f"Unknown Type: {log_type}")
+
+                    if log_code: # コードがある場合
+                        # コードが数字の場合は0埋め2桁の16進数として表示
+                        # 現在のlog_alの出力はR00やE11のようにアルファベットと2桁の16進数なので、
+                        # log_codeがそのまま16進数として扱える
+                        decoded_string = f"{log_type} : {type_description} (code: {log_code})"
+                    else: # コードがない場合
+                        decoded_string = f"{log_type} : {type_description}"
+                    
+                    print(decoded_string)
             print(f"--- End of log ---")
 
     except IOError as e:
