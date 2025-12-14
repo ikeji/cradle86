@@ -43,6 +43,33 @@ OS_JUMP_OFF             equ 0x0000
     pop ax                  ; axを復元
 %endmacro
 
+%macro log_ax 1
+    push ax                 ; Preserve original AX
+    push bx                 ; Preserve original BX (used for temp storage of AX)
+    push cx                 ; Preserve original CX (print_hex_byte uses it)
+    push dx                 ; Preserve original DX (print_hex_byte uses it)
+
+    mov bx, ax              ; Save original AX value into BX
+
+    mov al, %1              ; Load character argument into AL
+    call print_al_char      ; Print character
+
+    ; Print high byte of original AX (now in BH)
+    mov al, bh              ; Move high byte to AL
+    call print_hex_byte     ; Print as hex
+
+    ; Print low byte of original AX (now in BL)
+    mov al, bl              ; Move low byte to AL
+    call print_hex_byte     ; Print as hex
+
+    call print_crlf         ; Print CR+LF
+
+    pop dx                  ; Restore DX
+    pop cx                  ; Restore CX
+    pop bx                  ; Restore BX
+    pop ax                  ; Restore AX
+%endmacro
+
 org 0x7C00
 
 ; ==============================================================================
