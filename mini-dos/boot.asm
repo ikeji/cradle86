@@ -70,6 +70,35 @@ OS_JUMP_OFF             equ 0x0000
     pop ax                  ; Restore AX
 %endmacro
 
+%macro dump_memory 2 ; segment, offset
+    pusha
+    push ds
+
+    ; Log the address being dumped
+    mov ax, %1
+    log_ax '>' ; Address marker
+    mov ax, %2
+    log_ax ':' ; Address marker
+
+    ; Set DS to the target segment for lodsb
+    mov ax, %1
+    mov ds, ax
+    mov si, %2
+
+    ; Loop and print bytes
+    mov cx, 0xffff
+%%dump_loop:
+    lodsb               ; Load byte from DS:SI into AL, increments SI
+    call print_hex_byte
+    mov al, ' '
+    call print_al_char
+    loop %%dump_loop
+    call print_crlf
+
+    pop ds  ; Restore original DS
+    popa    ; Restore general purpose registers
+%endmacro
+
 org 0x7C00
 
 ; ==============================================================================
@@ -115,75 +144,30 @@ relocated_code:
     mov sp, STACK_PTR ; Stack re-initialized to relocated segment
     sti
 
-    ; Log Stack Segment (SS)
-    mov ax, ss
-    log_ax 'E'
-
-    ; ; First, reset the disk system
-    ; log_char 'F'
-    ; mov ah, 0x00
-    ; mov dl, bh ; Use saved boot drive number
+    ; mov ax, 0x4100
+    ; mov bx, 0x55AA
+    ; mov dl, 0x80        ; HDD
     ; int 0x13
-    ; mov al, ah
-    ; log_al 'r' ; Log Reset attempt and AL from reset
-
-    ; ; Get result status
-    ; log_char 'G'
-    ; mov ah, 0x01
-    ; mov dl, bh ; Use saved boot drive number
-    ; int 0x13
-    ; mov al, ah
-    ; log_al 'r' ; Log Reset attempt and AL from status
+    ; jc load_error ; CF=1 → 非対応
+    ; mov ax, bx
+    ; log_ax 'b'
+    ; mov ax, cx
+    ; log_ax 'c'
 
     ; Now, try to read
     log_char 'H'
-    mov ah, 0x02
-    mov al, 0x80
-    mov ch, 0 ; Cylinder
-    mov cl, 2 ; Back to original sector 2
-    mov dl, bh  ; Restore boot drive number from BH
-    mov dh, 0   ; Set head number to 0
-    mov bx, MINIDOS_TEMP_LOAD_SEG
-    mov es, bx
-    mov bx, MINIDOS_LOAD_OFF
+    push cs
+    pop ds
+    mov si, dap
+    sub si, 0x7C00
+    mov dl, 0x80
+    mov ah, 0x42
     clc ; Clear carry flag before INT 13h call for safety
     int 0x13
     jc load_error
-    log_al 's' ; Log error code in AL
-    mov al, ah
-    log_al 's' ; Log error code in AL
 
-    ; ; Get result status
-    ; log_char 'G'
-    ; mov ah, 0x01
-    ; mov dl, bh ; Use saved boot drive number
-    ; int 0x13
-    ; mov al, ah
-    ; log_al 'r' ; Log Reset attempt and AL from status
-
-    log_char 'I'
-    mov ah, 0x02
-    mov al, 0x80
-    mov ch, 0
-    mov cl, 2
-    mov dh, 0   ; Set head number to 0
-    mov bx, MINIDOS_TEMP_LOAD_SEG
-    mov es, bx
-    mov bx, MINIDOS_LOAD_OFF
-    clc ; Clear carry flag before INT 13h call for safety
-    int 0x13
-    jc load_error
-    log_al 's' ; Log error code in AL
-    mov al, ah
-    log_al 's' ; Log error code in AL
-
-    ; Get result status
-    log_char 'G'
-    mov ah, 0x01
-    mov dl, bh ; Use saved boot drive number
-    int 0x13
-    mov al, ah
-    log_al 'r' ; Log Reset attempt and AL from status
+    ; dump_memory 0x8000, 0x0000
+    ; dump_memory 0x9FFF, 0x0000
 
     log_char 'J'
     mov ax, MINIDOS_TEMP_LOAD_SEG
@@ -197,6 +181,9 @@ relocated_code:
 
     mov ax, BOOTLOADER_RELOCATE_SEG
     mov ds, ax
+
+    ;dump_memory 0x0000, 0x0000
+    ;dump_memory 0x1FFF, 0x0000
 
     log_char 'K'
     push word OS_JUMP_SEG
@@ -250,6 +237,20 @@ print_hex_byte:
 .is_digit:
     add al, '0'
     ret
+
+dap:
+    db 0x10               ; size
+    db 0x00               ; reserved
+.sectors:
+    dw 128
+.offset:
+    dw 0
+.segment:
+    dw 0x8000
+.lba_lo:
+    dd 1
+.lba_hi:
+    dd 0
 
 ; --- Padding and Boot Signature ---
 times 510 - ($ - $$) db 0
