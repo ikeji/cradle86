@@ -118,13 +118,7 @@ relocated_code:
 
     ; Log Stack Segment (SS)
     mov ax, ss
-    push ax ; Save AX as log_al uses AX
-    mov al, ah
-    log_al 'P' ; Log high byte of SS
-    pop ax ; Restore AX
-    push ax ; Save AX again
-    log_al 'p' ; Log low byte of SS
-    pop ax ; Restore AX
+    log_ax 'S'
 
     log_char 'L'
     
