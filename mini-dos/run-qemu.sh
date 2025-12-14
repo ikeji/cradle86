@@ -29,9 +29,9 @@ echo "Killing QEMU process (PID: $QEMU_PID)..."
 kill $QEMU_PID || true # Kill QEMU
 wait $QEMU_PID || true # Wait for QEMU to actually exit
 
-echo "QEMU run finished. Contents of $LOG_FILE:"
+echo "QEMU run finished. Decoded contents of $LOG_FILE:"
 if [ -f "$LOG_FILE" ]; then
-    cat "$LOG_FILE"
+    python3 tools/log_parser.py
 else
     echo "(log file not found)"
 fi

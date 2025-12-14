@@ -13,10 +13,12 @@ OS_JUMP_SEG             equ 0x1FFF
 OS_JUMP_OFF             equ 0x0000
 
 ; Macro to print a literal character, followed by CR+LF
-%macro print_log_char 1
+%macro log_char 1
+    push ax
     mov al, %1
     call print_al_char
     call print_crlf
+    pop ax
 %endmacro
 
 org 0x7C00
@@ -32,16 +34,16 @@ start:
     mov ax, 0x07C0
     mov ds, ax
 
-    print_log_char 'B'
+    log_char 'B'
     
-    print_log_char '1'
+    log_char '1'
     mov ax, BOOTLOADER_RELOCATE_SEG
     mov es, ax
     xor di, di
     xor si, si ; Source is start of bootloader (0x7C00), which is offset 0 from CS
     mov cx, 256
     rep movsw
-    print_log_char '2'
+    log_char '2'
 
     jmp BOOTLOADER_RELOCATE_SEG:(relocated_code - start)
 
@@ -49,7 +51,7 @@ start:
 ; This code runs from the new address (0x90000)
 ; ==============================================================================
 relocated_code:
-    print_log_char 'S'
+    log_char 'S'
     cli
     mov ax, BOOTLOADER_RELOCATE_SEG
     mov ds, ax
@@ -58,14 +60,14 @@ relocated_code:
     mov sp, STACK_PTR
     sti
 
-    print_log_char 'L'
+    log_char 'L'
     
     ; First, reset the disk system
     mov ah, 0x00
     mov dl, bh ; Use saved boot drive number
     int 0x13
     mov cl, al ; Save AL from reset
-    print_log_char 'R' ; Log Reset attempt
+    log_char 'R' ; Log Reset attempt
     mov al, cl
     call print_hex_byte ; Print reset status
     call print_crlf
@@ -85,9 +87,9 @@ relocated_code:
     int 0x13
     jc load_error
 
-    print_log_char 'C'
+    log_char 'C'
     
-    print_log_char 'M'
+    log_char 'M'
     mov ax, MINIDOS_TEMP_LOAD_SEG
     mov ds, ax
     mov si, MINIDOS_LOAD_OFF
@@ -96,19 +98,19 @@ relocated_code:
     mov di, MINIDOS_LOAD_OFF
     mov cx, 0 ; 0 means 65536 for rep movsw
     rep movsw
-    print_log_char 'D'
+    log_char 'D'
 
     mov ax, BOOTLOADER_RELOCATE_SEG
     mov ds, ax
 
-    print_log_char 'J'
+    log_char 'J'
     push word OS_JUMP_SEG
     push word OS_JUMP_OFF
     retf
 
 load_error:
     mov cl, al      ; Save error code in CL
-    print_log_char 'E'
+    log_char 'E'
     mov al, cl      ; Restore error code to AL
     call print_hex_byte
     call print_crlf
@@ -118,8 +120,10 @@ load_error:
 
 ; --- SUBROUTINES (placed after main execution flow) ---
 print_al_char:
+    push dx
     mov dx, COM1
     out dx, al
+    pop dx
     ret
 print_crlf:
     push ax
