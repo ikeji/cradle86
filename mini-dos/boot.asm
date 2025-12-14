@@ -1,136 +1,158 @@
 bits 16
 
-; --- Constants used in macro ---
+; --- DEFINITIONS (must come before org) ---
 COM1                    equ 0x3F8
+BOOTLOADER_RELOCATE_SEG equ 0x9000
+STACK_PTR               equ 0xFC00
+MINIDOS_TEMP_LOAD_SEG   equ 0x8000 ; Test loading to another safe address
+MINIDOS_FINAL_LOAD_SEG  equ 0x0000
+MINIDOS_LOAD_OFF        equ 0x0000
+MINIDOS_SECTORS_TO_READ equ 255 ; Read 255 sectors (almost 128KB)
+FLOPPY_DRIVE_NUMBER     equ 0x00
+OS_JUMP_SEG             equ 0x1FFF
+OS_JUMP_OFF             equ 0x0000
 
-; --- Macro for logging to COM1 ---
-%macro print_char 1
+; Macro to print a literal character, followed by CR+LF
+%macro print_log_char 1
     mov al, %1
-    mov dx, COM1
-    out dx, al
+    call print_al_char
+    call print_crlf
 %endmacro
 
 org 0x7C00
 
-; --- Other Constants ---
-BOOTLOADER_RELOCATE_SEG equ 0x9000
-STACK_SEG               equ 0x9000
-STACK_PTR               equ 0xFC00
-
-MINIDOS_TEMP_LOAD_SEG   equ 0x2000 ; Physical 0x20000
-MINIDOS_FINAL_LOAD_SEG  equ 0x0000 ; Physical 0x00000
-MINIDOS_LOAD_OFF        equ 0x0000
-MINIDOS_SECTORS_TO_READ equ 1 ; Test with a single sector first
-MINIDOS_START_SECTOR    equ 2
-FLOPPY_DRIVE_NUMBER     equ 0x00
-
-OS_JUMP_SEG             equ 0x1FFF
-OS_JUMP_OFF             equ 0x0000
-
 ; ==============================================================================
-; Execution starts here
+; Main execution starts here, at the very beginning (0x7C00)
 ; ==============================================================================
 start:
-    print_char 'B' ; Booting
+    ; Save the boot drive number passed by the BIOS in DL into BH for later use
+    mov bh, dl
 
-    ; Ensure DS points to the bootloader's load address (0x7C00).
+    ; Set DS explicitly to ensure it points to 0x7C00
     mov ax, 0x07C0
     mov ds, ax
+
+    print_log_char 'B'
     
-    ; --- Step 2: Relocate bootloader to 0x90000 ---
-    print_char '1'
+    print_log_char '1'
     mov ax, BOOTLOADER_RELOCATE_SEG
     mov es, ax
     xor di, di
-    xor si, si
+    xor si, si ; Source is start of bootloader (0x7C00), which is offset 0 from CS
     mov cx, 256
     rep movsw
-    print_char '2'
+    print_log_char '2'
 
-    ; Jump to the relocated code.
     jmp BOOTLOADER_RELOCATE_SEG:(relocated_code - start)
 
 ; ==============================================================================
-; Code runs from the new address (0x90000)
+; This code runs from the new address (0x90000)
 ; ==============================================================================
 relocated_code:
-    ; --- Step 1: Initialize stack ---
-    print_char 'S'
-    
+    print_log_char 'S'
     cli
-    print_char 'c' ; cli done
-
     mov ax, BOOTLOADER_RELOCATE_SEG
     mov ds, ax
-    print_char 'd' ; ds set
-
     mov es, ax
-    print_char 'e' ; es set
-
     mov ss, ax
     mov sp, STACK_PTR
-    print_char 's' ; ss:sp set
-
     sti
-    print_char 'i' ; sti done
 
-    ; --- Step 3: Load mini-dos.img to temporary location ---
-    print_char 'L'
+    print_log_char 'L'
+    
+    ; First, reset the disk system
+    mov ah, 0x00
+    mov dl, bh ; Use saved boot drive number
+    int 0x13
+    mov cl, al ; Save AL from reset
+    print_log_char 'R' ; Log Reset attempt
+    mov al, cl
+    call print_hex_byte ; Print reset status
+    call print_crlf
+    mov cl, 0x02 ; Restore CL for sector number
+
+    ; Now, try to read
     mov ah, 0x02
     mov al, MINIDOS_SECTORS_TO_READ
     mov ch, 0
-    mov cl, MINIDOS_START_SECTOR
-    mov dh, 0
-    mov dl, FLOPPY_DRIVE_NUMBER
-    mov bx, MINIDOS_TEMP_LOAD_SEG ; Load to 0x20000
+    mov cl, 2 ; Back to original sector 2
+    mov dl, bh  ; Restore boot drive number from BH
+    mov dh, 0   ; Set head number to 0
+    mov bx, MINIDOS_TEMP_LOAD_SEG
     mov es, bx
     mov bx, MINIDOS_LOAD_OFF
-    
+    clc ; Clear carry flag before INT 13h call for safety
     int 0x13
     jc load_error
-    print_char 'C' ; Load Complete
 
-    ; --- Step 3.5: Copy from temporary to final location ---
-    print_char 'M' ; Move Start
+    print_log_char 'C'
+    
+    print_log_char 'M'
     mov ax, MINIDOS_TEMP_LOAD_SEG
     mov ds, ax
     mov si, MINIDOS_LOAD_OFF
-    
     mov ax, MINIDOS_FINAL_LOAD_SEG
     mov es, ax
     mov di, MINIDOS_LOAD_OFF
+    mov cx, 0 ; 0 means 65536 for rep movsw
+    rep movsw
+    print_log_char 'D'
 
-    mov cx, 0 ; For 16-bit, 0 means 65536 iterations for rep
-    rep movsw ; Copy 128KB (65536 words)
-    print_char 'D' ; Move Done
-
-    ; Restore DS to our code segment before continuing
     mov ax, BOOTLOADER_RELOCATE_SEG
     mov ds, ax
 
-    ; --- Step 4: Jump to the OS ---
-    print_char 'J'
+    print_log_char 'J'
     push word OS_JUMP_SEG
     push word OS_JUMP_OFF
     retf
 
-; --- Error handling routine ---
 load_error:
-    print_char 'E'
-    mov si, err_msg
-print_err_loop:
-    lodsb
-    or al, al
-    jz halt_system
+    mov cl, al      ; Save error code in CL
+    print_log_char 'E'
+    mov al, cl      ; Restore error code to AL
+    call print_hex_byte
+    call print_crlf
+.hang:
+    hlt
+    jmp .hang
+
+; --- SUBROUTINES (placed after main execution flow) ---
+print_al_char:
     mov dx, COM1
     out dx, al
-    jmp print_err_loop
-
-halt_system:
-    cli
-    hlt
-
-err_msg: db ':LOAD', 0
+    ret
+print_crlf:
+    push ax
+    mov al, 0x0D ; CR
+    call print_al_char
+    mov al, 0x0A ; LF
+    call print_al_char
+    pop ax
+    ret
+print_hex_byte:
+    push ax
+    push cx
+    push dx
+    mov cl, al
+    shr al, 4
+    call .to_hex_char
+    call print_al_char
+    mov al, cl
+    and al, 0x0F
+    call .to_hex_char
+    call print_al_char
+    pop dx
+    pop cx
+    pop ax
+    ret
+.to_hex_char:
+    cmp al, 9
+    jle .is_digit
+    add al, 'A' - 10
+    ret
+.is_digit:
+    add al, '0'
+    ret
 
 ; --- Padding and Boot Signature ---
 times 510 - ($ - $$) db 0

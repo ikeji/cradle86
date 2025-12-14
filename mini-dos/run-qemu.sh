@@ -10,19 +10,24 @@ if [ ! -f "$FINAL_IMAGE" ]; then
     exit 1
 fi
 
-# Clean up old log file
 rm -f $LOG_FILE
 
-echo "Starting QEMU for 2 seconds. Log will be written to $LOG_FILE."
+echo "Starting QEMU. Log will be written to $LOG_FILE."
 
-# Run QEMU and redirect serial output to a file.
-# timeout is used to ensure QEMU exits, as our bootloader might loop indefinitely.
-timeout 2s qemu-system-i386 \
+qemu-system-i386 \
     -drive format=raw,file=$FINAL_IMAGE \
     -serial file:$LOG_FILE \
     -monitor none \
     -display none \
-    -device isa-debug-exit,iobase=0x501,iosize=1 > /dev/null 2>&1 || true
+    -device isa-debug-exit,iobase=0x501,iosize=1 & # Run in background
+QEMU_PID=$! # Get PID of QEMU
+
+echo "QEMU PID: $QEMU_PID"
+echo "Waiting for 3 seconds to collect logs..."
+sleep 3
+echo "Killing QEMU process (PID: $QEMU_PID)..."
+kill $QEMU_PID || true # Kill QEMU
+wait $QEMU_PID || true # Wait for QEMU to actually exit
 
 echo "QEMU run finished. Contents of $LOG_FILE:"
 if [ -f "$LOG_FILE" ]; then
