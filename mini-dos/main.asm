@@ -4,6 +4,17 @@ bits 16
 cpu 8086
 org 0
 
+; --- Interrupt Vector Table (IVT) ---
+%assign i 0
+%rep 255
+    dw isr_%+i - KERNEL_PHYSICAL
+    dw KERNEL_SEGMENT
+%assign i i+1
+%endrep
+; Fill the rest of the IVT with null pointers, up to 256 entries total
+times (256 * 4) - ($ - $$) db 0
+
+
 ; --- Constants ---
 COM1 equ 0x3F8 ; I/O port for character output (COM1)
 
@@ -60,13 +71,20 @@ reset_handler:
     mov ax, KERNEL_SEGMENT
     mov ds, ax
     mov si, boot_msg - KERNEL_PHYSICAL
-    call print_string_com1
-
-hang:
-    jmp hang ; Infinite loop to halt CPU
+        call print_string_com1
+    
+        ; --- Set up environment for COMMAND.COM ---
+        mov ax, COMMAND_SEGMENT ; 0x0100
+        mov ds, ax
+        mov es, ax
+        mov ss, ax
+        mov sp, 0xFFFE          ; Standard stack pointer for .COM programs
+    
+        ; --- Jump to COMMAND.COM ---
+        jmp COMMAND_COM_SEGMENT:COMMAND_COM_OFFSET
 
     ; --- Data ---
-    boot_msg db "oBooting kernel...", 0
+    boot_msg db "oBooting kernel...", 13, 10, 0
 
 print_string_com1:
     push ax
@@ -101,6 +119,103 @@ print_string_com1:
 ; ---------------------------------
 ; Interrupt Handlers
 ; ---------------------------------
+%macro GEN_INT_HANDLER 1
+isr_%1:
+    push ax
+    push cx
+    push dx
+    push bx
+    push sp
+    push bp
+    push si
+    push di
+    mov ax, KERNEL_SEGMENT
+    mov ds, ax
+    mov si, msg_prefix - KERNEL_PHYSICAL
+    call print_string_com1
+    mov al, %1
+    call print_al_hex
+    mov si, msg_suffix - KERNEL_PHYSICAL
+    call print_string_com1
+    pop di
+    pop si
+    pop bp
+    pop sp
+    pop bx
+    pop dx
+    pop cx
+    pop ax
+    iret
+%endmacro
+
+%assign i 0
+%rep 255
+  GEN_INT_HANDLER i
+%assign i i+1
+%endrep
+
+; --- Interrupt handler helper functions and data ---
+msg_prefix db 'oInterrupt 0x', 0
+msg_suffix db ' called', 13, 10, 0
+
+print_al_hex:
+    ; Prints AL as a two-digit hex number.
+    ; Clobbers: none
+    push ax
+    push cx
+    mov ah, al ; save original al
+
+    ; high nibble
+    mov cl, 4
+    shr al, cl
+    call print_nibble_from_al
+
+    ; low nibble
+    mov al, ah
+    and al, 0x0f
+    call print_nibble_from_al
+
+    pop cx
+    pop ax
+    ret
+
+print_nibble_from_al:
+    ; Prints low nibble of AL as a hex character.
+    ; Clobbers: none
+    push ax
+    cmp al, 10
+    jl .is_digit
+    ; it's a letter
+    sub al, 10
+    add al, 'A'
+    jmp .print
+.is_digit:
+    add al, '0'
+.print:
+    call print_char_com1
+    pop ax
+    ret
+
+print_char_com1:
+    ; Prints character in AL to COM1.
+    ; Clobbers: none
+    push ax
+    push dx
+    mov ah, al ; save char
+
+.wait:
+    mov dx, COM1 + 5
+    in al, dx
+    test al, 0x20
+    jz .wait
+
+    mov al, ah ; restore char
+    mov dx, COM1
+    out dx, al
+
+    pop dx
+    pop ax
+    ret
 
 
 ; ===================================================================
