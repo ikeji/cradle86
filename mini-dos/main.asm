@@ -129,17 +129,40 @@ isr_%1:
     push bp
     push si
     push di
+
+    mov bp, sp ; BP now points to the top of the pushed registers (original DI)
+
+    ; All registers are saved. DS is set inside the handler.
     mov ax, KERNEL_SEGMENT
     mov ds, ax
+
+    ; Print "Interrupt 0xXX"
     mov si, msg_prefix - KERNEL_PHYSICAL
     call print_string_com1
     mov al, %1
     call print_al_hex
-    mov si, msg_suffix - KERNEL_PHYSICAL
+
+    %if %1 == 0x21
+        ; For INT 21h, also print AH
+        mov si, msg_suffix_int21 - KERNEL_PHYSICAL ; " called, AH="
+        call print_string_com1
+        
+        ; Get original AH from stack. AX is at [bp + 14]
+        ; AH is high byte of AX, so at [bp + 14 + 1]
+        mov bl, byte [bp + 14 + 1] 
+        mov al, bl
+        call print_al_hex
+    %else
+        mov si, msg_suffix_general - KERNEL_PHYSICAL ; " called"
+        call print_string_com1
+    %endif
+
+    mov si, msg_crlf - KERNEL_PHYSICAL ; "\r\n"
     call print_string_com1
+
     pop di
     pop si
-    pop bp
+    pop bp ; Restore original BP
     pop sp
     pop bx
     pop dx
@@ -156,7 +179,9 @@ isr_%1:
 
 ; --- Interrupt handler helper functions and data ---
 msg_prefix db 'oInterrupt 0x', 0
-msg_suffix db ' called', 13, 10, 0
+msg_suffix_general db ' called', 0
+msg_suffix_int21 db ' called, AH=', 0
+msg_crlf db 13, 10, 0
 
 print_al_hex:
     ; Prints AL as a two-digit hex number.
