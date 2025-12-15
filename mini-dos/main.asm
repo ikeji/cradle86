@@ -1,19 +1,36 @@
 ; main.asm for mini-dos
 
 bits 16
+cpu 8086
 org 0
 
 ; --- Constants ---
-LOG_PORT equ 0xE9   ; I/O port for logging (Bochs/QEMU debug port)
-CHAR_OUT_PORT equ 0x3F8 ; I/O port for character output (COM1)
+COM1 equ 0x3F8 ; I/O port for character output (COM1)
 
 ; --- Memory Layout ---
-PSP_SEGMENT      equ 0x0100  ; Segment for the Program Segment Prefix (physical 0x1000)
-COMMAND_OFFSET   equ 0x0100  ; .COM files start at offset 0x100 in their segment
-COMMAND_PHYSICAL equ (PSP_SEGMENT * 16) + COMMAND_OFFSET ; Physical address 0x1100
+; Interrupt Vector Table (IVT)
+IVT_PHYSICAL_ADDRESS     equ 0x00000
+IVT_START_SEGMENT        equ 0x0000
+IVT_START_OFFSET         equ 0x0000
 
-OS_CODE_START    equ 0x1F000 ; Physical address where our OS code (handlers, etc.) starts
-OS_CODE_SEGMENT  equ OS_CODE_START >> 4 ; 0x1F00
+; COMMAND.COM Memory Layout
+COMMAND_PHYSICAL         equ 0x01000
+COMMAND_SEGMENT          equ 0x0100
+COMMAND_OFFSET           equ  0x0000
+
+COMMAND_PSP_PHYSICAL     equ 0x01000
+COMMAND_PSP_SEGMENT      equ 0x0100
+COMMAND_PSP_OFFSET       equ  0x0000
+
+COMMAND_COM_PHYSICAL     equ 0x01100
+COMMAND_COM_SEGMENT      equ 0x0100
+COMMAND_COM_OFFSET       equ  0x0100
+
+; Kernel Memory Layout
+KERNEL_PHYSICAL          equ 0x11000
+KERNEL_SEGMENT           equ 0x1100
+KERNEL_OFFSET            equ  0x0000
+KERNEL_STACK_INIT_OFFSET equ  0xEFF0
 
 ; ===================================================================
 ; This is the start of the 128KB image file.
@@ -28,146 +45,63 @@ COMMAND_COM_END:
 ; OS Code Section
 ; Placed at 0x1F000, which is where the reset_vector jumps.
 ; ===================================================================
-times OS_CODE_START - ($ - $$) db 0
-os_code:
+times KERNEL_PHYSICAL - ($ - $$) db 0
+kernel:
 
 reset_handler:
     cli                         ; Disable interrupts
-    
+
     ; --- Setup our own stack ---
-    mov ax, OS_CODE_SEGMENT
+    mov ax, KERNEL_SEGMENT
     mov ss, ax
-    mov sp, 0xFFF0              ; Stack at the top of our 64k segment
+    mov sp, KERNEL_STACK_INIT_OFFSET
 
-    ; --- Log that we have started ---
-    mov ax, 0xDEAD
-    out LOG_PORT, ax
-
-    ; --- Setup Interrupt Vector Table (IVT) ---
-    mov ax, 0
-    mov es, ax
-    xor di, di
-    mov cx, 256
-    mov ax, generic_isr         ; offset
-    mov bx, OS_CODE_SEGMENT     ; segment
-.setup_ivt_loop:
-    mov [es:di], ax
-    mov [es:di+2], bx
-    add di, 4
-    loop .setup_ivt_loop
-    
-    ; --- Setup specific handler for INT 21h ---
-    mov ax, dos_api_handler     ; offset
-    mov bx, OS_CODE_SEGMENT     ; segment
-    mov word [es:0x21*4], ax
-    mov word [es:0x21*4+2], bx
-
-    ; --- Setup PSP for COMMAND.COM ---
-    mov ax, PSP_SEGMENT
-    mov es, ax
-    
-    xor di, di
-    mov cx, 128
-    xor ax, ax
-    rep stosw ; Clear the 256-byte PSP area
-
-    mov word [es:0x00], 0xCD20 ; INT 20h (Terminate)
-    mov word [es:0x02], OS_CODE_SEGMENT ; Top of Memory (exclusive)
-    
-    ; Set default DTA to PSP+80h. We do this by calling our own INT 21h handler.
-    mov ah, 0x1A
-    mov dx, 0x80
-    ; Set DS to PSP segment before calling INT 21h, as the handler might need it.
-    push ds
+    ; --- Print booting message ---
+    mov ax, KERNEL_SEGMENT
     mov ds, ax
-    int 0x21
-    pop ds
+    mov si, boot_msg - KERNEL_PHYSICAL
+    call print_string_com1
 
-    ; --- Prepare to launch COMMAND.COM ---
-    sti ; Enable interrupts
+hang:
+    jmp hang ; Infinite loop to halt CPU
 
-    ; A .COM program expects: CS=DS=ES=SS=PSP_SEGMENT, SP=FFFEh (or so)
-    ; and execution to start at offset 0x100.
-    push word PSP_SEGMENT
-    push word COMMAND_OFFSET
+    ; --- Data ---
+    boot_msg db "oBooting kernel...", 0
 
-    retf ; Far return to start COMMAND.COM
+print_string_com1:
+    push ax
+    push si
+    push dx
+    push bx ; Save bx as well
+
+.loop:
+    lodsb                   ; Load byte from DS:SI into AL, increment SI
+    test al, al             ; Check if AL is null terminator
+    jz .done                ; If null, string is finished
+    mov bl, al              ; Save the character in BL
+
+.wait_for_com1:
+    mov dx, COM1 + 5        ; Load the correct port number into dx
+    in al, dx               ; Get Line Status Register (LSR)
+    test al, 0x20           ; Check if Transmitter Holding Register Empty (THRE) bit (bit 5) is set
+    jz .wait_for_com1       ; If not set, wait
+
+    mov dx, COM1
+    mov al, bl              ; Restore the character to AL
+    out dx, al              ; Output character to COM1 data port
+    jmp .loop
+
+.done:
+    pop bx ; Restore bx
+    pop dx
+    pop si
+    pop ax
+    ret
 
 ; ---------------------------------
 ; Interrupt Handlers
 ; ---------------------------------
 
-; --- Generic Interrupt Service Routine (ISR) ---
-generic_isr:
-    iret
-
-; --- DOS API (INT 21h) Handler ---
-dos_api_handler:
-    ; Log AH value (function number) for debugging
-    mov bx, ax
-    mov ax, 0x2100
-    or ah, bh
-    out LOG_PORT, ax
-    
-    cmp ah, 0x02 ; Function 02h: Display Output
-    je .dos_display_output
-    cmp ah, 0x09 ; Function 09h: Print String
-    je .dos_print_string
-    cmp ah, 0x1A ; Function 1Ah: Set DTA
-    je .dos_set_dta
-    cmp ah, 0x30 ; Function 30h: Get DOS Version
-    je .dos_get_version
-    cmp ah, 0x4C ; Function 4Ch: Exit with return code
-    je .dos_exit
-
-    ; --- Unhandled function ---
-    stc ; Set Carry Flag to indicate an error
-    iret
-
-.dos_display_output: ; AH=02h, DL=char
-    mov dx, CHAR_OUT_PORT
-    mov al, dl
-    out dx, al
-    clc
-    iret
-
-.dos_print_string: ; AH=09h, DS:DX -> string terminated by '$'
-    mov bx, dx
-    mov dx, CHAR_OUT_PORT
-.print_loop:
-    mov al, [ds:bx]
-    cmp al, '$'
-    je .print_done
-    out dx, al
-    inc bx
-    jmp .print_loop
-.print_done:
-    clc
-    iret
-
-.dos_set_dta: ; AH=1Ah, DS:DX = new DTA
-    mov [dta_address_offset], dx
-    mov ax, ds
-    mov [dta_address_segment], ax
-    clc
-    iret
-
-.dos_get_version: ; AH=30h
-    mov al, 3  ; Major version
-    mov ah, 30 ; Minor version (3.30)
-    xor bx, bx
-    clc
-    iret
-
-.dos_exit: ; AH=4Ch, AL=return code
-    mov ax, 0xCC00
-    or al, [es:0x81] ; Exit code is in command line buffer
-    out LOG_PORT, ax
-    hlt ; Halt the system
-
-; --- OS Data Area ---
-dta_address_offset: dw 0x0080
-dta_address_segment: dw PSP_SEGMENT
 
 ; ===================================================================
 ; Reset Vector
@@ -175,7 +109,7 @@ dta_address_segment: dw PSP_SEGMENT
 ; ===================================================================
 times 0x1FFF0 - ($ - $$) db 0
 reset_vector:
-    jmp OS_CODE_SEGMENT:(reset_handler - os_code)
+    jmp KERNEL_SEGMENT:KERNEL_OFFSET
 
 ; ===================================================================
 ; Padding to ensure the final image is exactly 128KB (0x20000 bytes)

@@ -29,6 +29,7 @@ DECODE_MAP = {
     "r":"Return code",
     "e":"Error code",
     "s":"Success code",
+    "o":"KERNEL"
 }
 
 def main():
@@ -59,7 +60,7 @@ def main():
                         # コードが数字の場合は0埋め2桁の16進数として表示
                         # 現在のlog_alの出力はR00やE11のようにアルファベットと2桁の16進数なので、
                         # log_codeがそのまま16進数として扱える
-                        decoded_string = f"{log_type} : {type_description} (code: {log_code})"
+                        decoded_string = f"{log_type} : {type_description} : {log_code}"
                     else: # コードがない場合
                         decoded_string = f"{log_type} : {type_description}"
                     

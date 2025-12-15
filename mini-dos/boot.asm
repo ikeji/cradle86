@@ -2,9 +2,12 @@ bits 16
 
 ; --- DEFINITIONS (must come before org) ---
 COM1                    equ 0x3F8
-BOOTLOADER_RELOCATE_SEG equ 0x9000
+BOOTLOADER_ORIGINAL_SEG equ 0x0000
+BOOTLOADER_RELOCATE_SEG equ 0x4000
+BOOTLOADER_ORIGINAL_OFF equ 0x7C00
+
 STACK_PTR               equ 0xFC00
-MINIDOS_TEMP_LOAD_SEG   equ 0x8000 ; Test loading to another safe address
+MINIDOS_TEMP_LOAD_SEG   equ 0x3000 ; Test loading to another safe address
 MINIDOS_FINAL_LOAD_SEG  equ 0x0000
 MINIDOS_LOAD_OFF        equ 0x0000
 MINIDOS_SECTORS_TO_READ equ 255 ; Read 255 sectors (almost 128KB)
@@ -86,7 +89,9 @@ OS_JUMP_OFF             equ 0x0000
     mov si, %2
 
     ; Loop and print bytes
-    mov cx, 0xffff
+    mov bx, 0x1000
+%%dump_loop2:
+    mov cx, 0x10
 %%dump_loop:
     lodsb               ; Load byte from DS:SI into AL, increments SI
     call print_hex_byte
@@ -94,6 +99,8 @@ OS_JUMP_OFF             equ 0x0000
     call print_al_char
     loop %%dump_loop
     call print_crlf
+    dec bx
+    jnz %%dump_loop2
 
     pop ds  ; Restore original DS
     popa    ; Restore general purpose registers
@@ -105,14 +112,11 @@ org 0x7C00
 ; Main execution starts here, at the very beginning (0x7C00)
 ; ==============================================================================
 start:
-    ; Save the boot drive number passed by the BIOS in DL into BH for later use
-    mov bh, dl
-
     ; Initialize segment registers and stack before using stack-dependent macros
-    mov ax, 0x07C0
+    mov ax, 0x0
     mov ds, ax
-    mov es, ax ; ES is also used before relocation by movsw
-    mov ss, ax ; Initialize SS
+    mov es, ax
+    mov ss, ax
     mov sp, STACK_PTR ; Initialize SP
 
     ; Log the boot drive number (which is in DL)
@@ -120,16 +124,20 @@ start:
     log_al 'A'
 
     log_char 'B'
-    
+ 
+    cli 
+    cld 
+    mov ax, BOOTLOADER_ORIGINAL_SEG 
+    mov ds, ax
     mov ax, BOOTLOADER_RELOCATE_SEG
     mov es, ax
-    xor di, di
-    xor si, si ; Source is start of bootloader (0x7C00), which is offset 0 from CS
-    mov cx, 256
-    rep movsw
+    mov di, BOOTLOADER_ORIGINAL_OFF
+    mov si, BOOTLOADER_ORIGINAL_OFF
+    mov cx, 512/2
+    rep movsw  ; es:di ← ds:si * cx
     log_char 'C'
 
-    jmp BOOTLOADER_RELOCATE_SEG:(relocated_code - start)
+    jmp BOOTLOADER_RELOCATE_SEG:relocated_code
 
 ; ==============================================================================
 ; This code runs from the new address (0x90000)
@@ -142,7 +150,7 @@ relocated_code:
     mov es, ax
     mov ss, ax ; Stack re-initialized to relocated segment
     mov sp, STACK_PTR ; Stack re-initialized to relocated segment
-    sti
+    ;sti
 
     ; mov ax, 0x4100
     ; mov bx, 0x55AA
@@ -156,34 +164,45 @@ relocated_code:
 
     ; Now, try to read
     log_char 'H'
-    push cs
-    pop ds
     mov si, dap
-    sub si, 0x7C00
+    mov dl, 0x80
+    mov ah, 0x42
+    clc ; Clear carry flag before INT 13h call for safety
+    int 0x13
+    jc load_error
+    
+    log_char 'I'
+    mov si, dap2
     mov dl, 0x80
     mov ah, 0x42
     clc ; Clear carry flag before INT 13h call for safety
     int 0x13
     jc load_error
 
-    ; dump_memory 0x8000, 0x0000
-    ; dump_memory 0x9FFF, 0x0000
+    ;dump_memory 0x2000, 0x0000
+    ;dump_memory 0x3000, 0x0000
 
     log_char 'J'
-    mov ax, MINIDOS_TEMP_LOAD_SEG
+    mov ax, 0x2000
     mov ds, ax
-    mov si, MINIDOS_LOAD_OFF
-    mov ax, MINIDOS_FINAL_LOAD_SEG
+    mov si, 0
+    mov ax, 0x0000
     mov es, ax
-    mov di, MINIDOS_LOAD_OFF
-    mov cx, 0 ; 0 means 65536 for rep movsw
-    rep movsw
+    mov di, 0
+    mov cx, 32768
+    rep movsw  ; es:di ← ds:si * cx
 
-    mov ax, BOOTLOADER_RELOCATE_SEG
+    mov ax, 0x3000
     mov ds, ax
+    mov si, 0
+    mov ax, 0x1000
+    mov es, ax
+    mov di, 0
+    mov cx, 32768 ; 0 means 65536 for rep movsw
+    rep movsw  ; es:di ← ds:si * cx
 
     ;dump_memory 0x0000, 0x0000
-    ;dump_memory 0x1FFF, 0x0000
+    ;dump_memory 0x1000, 0x0000
 
     log_char 'K'
     push word OS_JUMP_SEG
@@ -246,9 +265,23 @@ dap:
 .offset:
     dw 0
 .segment:
-    dw 0x8000
+    dw 0x2000
 .lba_lo:
     dd 1
+.lba_hi:
+    dd 0
+
+dap2:
+    db 0x10               ; size
+    db 0x00               ; reserved
+.sectors:
+    dw 128
+.offset:
+    dw 0
+.segment:
+    dw 0x3000
+.lba_lo:
+    dd 129
 .lba_hi:
     dd 0
 

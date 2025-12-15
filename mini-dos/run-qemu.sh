@@ -23,8 +23,9 @@ qemu-system-i386 \
 QEMU_PID=$! # Get PID of QEMU
 
 echo "QEMU PID: $QEMU_PID"
-echo "Waiting for 1 seconds to collect logs..."
-sleep 1
+WAIT_SEC=1
+echo "Waiting for ${WAIT_SEC} seconds to collect logs..."
+sleep ${WAIT_SEC}
 echo "Killing QEMU process (PID: $QEMU_PID)..."
 kill $QEMU_PID || true # Kill QEMU
 wait $QEMU_PID || true # Wait for QEMU to actually exit
