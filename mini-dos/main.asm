@@ -71,20 +71,24 @@ reset_handler:
     mov ax, KERNEL_SEGMENT
     mov ds, ax
     mov si, boot_msg - KERNEL_PHYSICAL
-        call print_string_com1
-    
-        ; --- Set up environment for COMMAND.COM ---
-        mov ax, COMMAND_SEGMENT ; 0x0100
-        mov ds, ax
-        mov es, ax
-        mov ss, ax
-        mov sp, 0xFFFE          ; Standard stack pointer for .COM programs
-    
-        ; --- Jump to COMMAND.COM ---
-        jmp COMMAND_COM_SEGMENT:COMMAND_COM_OFFSET
+    call print_string_com1
+
+    ; --- Set up environment for COMMAND.COM ---
+    mov ax, COMMAND_SEGMENT ; 0x0100
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov sp, 0xFFFE          ; Standard stack pointer for .COM programs
+
+    sti
+
+    ; --- Jump to COMMAND.COM ---
+    jmp COMMAND_COM_SEGMENT:COMMAND_COM_OFFSET
 
     ; --- Data ---
     boot_msg db "oBooting kernel...", 13, 10, 0
+    current_psp dw 0
+
 
 print_string_com1:
     push ax
@@ -130,9 +134,9 @@ isr_%1:
     push si
     push di
 
-    mov bp, sp ; BP now points to the top of the pushed registers (original DI)
+    mov bp, sp ; Use BP for stack addressing
 
-    ; All registers are saved. DS is set inside the handler.
+    ; Set segment register for logging
     mov ax, KERNEL_SEGMENT
     mov ds, ax
 
@@ -143,26 +147,64 @@ isr_%1:
     call print_al_hex
 
     %if %1 == 0x21
-        ; For INT 21h, also print AH
+        ; For INT 21h, print AH
         mov si, msg_suffix_int21 - KERNEL_PHYSICAL ; " called, AH="
         call print_string_com1
         
-        ; Get original AH from stack. AX is at [bp + 14]
-        ; AH is high byte of AX, so at [bp + 14 + 1]
-        mov bl, byte [bp + 14 + 1] 
+        mov bl, byte [bp + 14 + 1] ; Original AH from stack
         mov al, bl
         call print_al_hex
+
+        ; --- INT 21h sub-function handling ---
+        cmp bl, 0x02
+        je .int21_ah02
+
+        cmp bl, 0x49
+        je .int21_ah49
+
+        cmp bl, 0x50
+        je .int21_ah50
+        
+        jmp .int21_done ; Default: do nothing
+
+    .int21_ah02:
+        ; AH=02h: Log DL
+        mov si, msg_dl_suffix - KERNEL_PHYSICAL ; ", DL="
+        call print_string_com1
+        mov bl, byte [bp + 10] ; Original DL from stack
+        mov al, bl
+        call print_al_hex
+        jmp .int21_done
+
+    .int21_ah49:
+        ; AH=49h: Free Memory. ES has segment.
+        ; No action needed for stub.
+        jmp .int21_done
+
+    .int21_ah50:
+        ; AH=50h: Set PSP. BX has new PSP segment.
+        mov ax, [bp + 8] ; Original BX from stack
+        mov [current_psp - KERNEL_PHYSICAL], ax
+        ; no jmp needed, falls through
+
+    .int21_done:
+
     %else
+        ; For other interrupts
         mov si, msg_suffix_general - KERNEL_PHYSICAL ; " called"
         call print_string_com1
     %endif
 
-    mov si, msg_crlf - KERNEL_PHYSICAL ; "\r\n"
+    ; Print CR+LF
+    mov si, msg_crlf - KERNEL_PHYSICAL
     call print_string_com1
+
+    ; Return success by clearing carry flag on stack
+    and word [bp + 20], 0xFFFE
 
     pop di
     pop si
-    pop bp ; Restore original BP
+    pop bp
     pop sp
     pop bx
     pop dx
@@ -181,6 +223,7 @@ isr_%1:
 msg_prefix db 'oInterrupt 0x', 0
 msg_suffix_general db ' called', 0
 msg_suffix_int21 db ' called, AH=', 0
+msg_dl_suffix db ', DL=', 0
 msg_crlf db 13, 10, 0
 
 print_al_hex:
