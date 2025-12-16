@@ -125,8 +125,8 @@ def main():
 
     # 5. Decode and print the log
     print("\n=== Execution Log (Decoded on PC) ===")
-    print(f"{'Cycle':<5} | {'Address':<7} | {'BHE':<3} | {'A0':<2} | {'Type':<6} | {'Access':<9} | {'Data':<4} | {'Value':<5} |")
-    print("-" * 64)
+    print(f"{'Cycle':<5} | {'Address':<7} | {'BHE':<3} | {'A0':<2} | {'Type':<6} | {'Access':<9} | {'Data':<4} | {'Value':<10} |")
+    print("-" * 69)
 
     # Corresponds to enum LogType in C++
     type_map = {
@@ -179,18 +179,24 @@ def main():
 
         # Calculate value to display in "Value" column
         value_to_display_str = "----"
+        byte_value = None
         if access_type_str == "HIGH_BYTE":
-            value_to_display_str = f"{data >> 8:02X}"
+            byte_value = data >> 8
+            value_to_display_str = f"{byte_value:02X}"
         elif access_type_str == "LOW_BYTE":
-            value_to_display_str = f"{data & 0xFF:02X}"
+            byte_value = data & 0xFF
+            value_to_display_str = f"{byte_value:02X}"
         elif access_type_str == "WORD":
             value_to_display_str = f"{data:04X}"
+        
+        if byte_value is not None and 32 <= byte_value <= 126: # Printable ASCII
+            value_to_display_str += f" '{chr(byte_value)}'"
         # For "INVALID", it remains "----"
 
-        print(f"{count:<5} | {f'{addr:05X}':<7} | {bhe_display_str:<3} | {a0_display_str:<2} | {type_str:<6} | {access_type_str:<9} | {f'{data:04X}':<4} | {value_to_display_str:<5} |")
+        print(f"{count:<5} | {f'{addr:05X}':<7} | {bhe_display_str:<3} | {a0_display_str:<2} | {type_str:<6} | {access_type_str:<9} | {f'{data:04X}':<4} | {value_to_display_str:<10} |")
         count += 1
     
-    print("-" * 64)
+    print("-" * 69)
     print(f"Total valid cycles logged: {count}")
 
 if __name__ == "__main__":

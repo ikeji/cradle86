@@ -16,7 +16,7 @@
 
 // --- Config ---
 #define VERSION_STR "0.0.1"
-#define RAM_SIZE 0x10000 // 64KB Virtual RAM
+#define RAM_SIZE 0x20000 // 128KB Virtual RAM
 #define MAX_CYCLES 5000  // Log buffer size
 
 // --- Pin Definitions ---
