@@ -47,7 +47,7 @@ KERNEL_STACK_INIT_OFFSET equ  0xEFF0
 ; This is the start of the 128KB image file.
 ; First, we pad until the physical address for COMMAND.COM
 ; ===================================================================
-times COMMAND_PHYSICAL - ($ - $$) db 0
+times COMMAND_COM_PHYSICAL - ($ - $$) db 0
 incbin "COMMAND.COM"
 COMMAND_COM_END:
 
@@ -74,11 +74,25 @@ reset_handler:
     call print_string_com1
 
     ; --- Set up environment for COMMAND.COM ---
-    mov ax, COMMAND_SEGMENT ; 0x0100
+    mov ax, COMMAND_PSP_SEGMENT ; 0x0100
     mov ds, ax
     mov es, ax
     mov ss, ax
-    mov sp, 0xFFFE          ; Standard stack pointer for .COM programs
+    mov sp, 0xFFFE
+
+    ; --- Initialize PSP ---
+    ; Clear the PSP area (256 bytes)
+    xor ax, ax
+    mov di, COMMAND_PSP_OFFSET
+    mov cx, 128 ; 128 words = 256 bytes
+    rep stosw
+
+    ; INT 20h (Program Terminate) at offset 0
+    mov word [es:COMMAND_PSP_OFFSET + 0x00], 0x20CD
+
+    ; Command line at offset 0x80: length=0, terminator=CR
+    mov byte [es:COMMAND_PSP_OFFSET + 0x80], 0
+    mov byte [es:COMMAND_PSP_OFFSET + 0x81], 0x0D
 
     sti
 
@@ -133,6 +147,8 @@ isr_%1:
     push bp
     push si
     push di
+    push ds
+    push es
 
     mov bp, sp ; Use BP for stack addressing
 
@@ -151,29 +167,62 @@ isr_%1:
         mov si, msg_suffix_int21 - KERNEL_PHYSICAL ; " called, AH="
         call print_string_com1
         
-        mov bl, byte [bp + 14 + 1] ; Original AH from stack
+        mov bl, byte [bp + 18 + 1] ; Original AH from stack
         mov al, bl
         call print_al_hex
 
         ; --- INT 21h sub-function handling ---
-        cmp bl, 0x02
-        je .int21_ah02
-
-        cmp bl, 0x49
-        je .int21_ah49
-
-        cmp bl, 0x50
-        je .int21_ah50
+                cmp bl, 0x02
+                je .int21_ah02
         
-        jmp .int21_done ; Default: do nothing
-
-    .int21_ah02:
-        ; AH=02h: Log DL
-        mov si, msg_dl_suffix - KERNEL_PHYSICAL ; ", DL="
+                cmp bl, 0x3D
+                je .int21_ah3d
+        
+                cmp bl, 0x49
+                je .int21_ah49
+        
+                cmp bl, 0x50
+                je .int21_ah50
+                
+                jmp .int21_done ; Default: do nothing
+        
+            .int21_ah02:
+                ; AH=02h: Log DL
+                mov si, msg_dl_suffix - KERNEL_PHYSICAL ; ", DL="
+                call print_string_com1
+                mov bl, byte [bp + 14] ; Original DL from stack
+                mov al, bl
+                call print_al_hex
+        
+                ; Check if DL is a printable ASCII character (0x20-0x7E)
+                mov al, bl ; Restore original DL to AL for comparison
+                cmp al, 0x20
+                jl .int21_ah02_ascii_done ; Less than space, not printable
+                cmp al, 0x7E
+                jg .int21_ah02_ascii_done ; Greater than tilde, not printable
+        
+                ; It's a printable character, print its ASCII representation
+                mov si, msg_ascii_suffix - KERNEL_PHYSICAL
+                call print_string_com1
+                mov al, bl ; DL is still in bl
+                call print_char_com1
+                mov si, msg_quote - KERNEL_PHYSICAL
+                call print_string_com1
+        
+            .int21_ah02_ascii_done:
+                jmp .int21_done
+    .int21_ah3d:
+        ; AH=3Dh: Open file. DS:DX points to filename.
+        mov si, msg_filename_suffix - KERNEL_PHYSICAL
         call print_string_com1
-        mov bl, byte [bp + 10] ; Original DL from stack
-        mov al, bl
-        call print_al_hex
+
+        ; Temporarily switch DS to print filename from user space
+        push ds
+        mov ds, [bp + 2]  ; caller's DS
+        mov si, [bp + 14] ; caller's DX
+        call print_string_com1
+        pop ds
+
         jmp .int21_done
 
     .int21_ah49:
@@ -183,7 +232,7 @@ isr_%1:
 
     .int21_ah50:
         ; AH=50h: Set PSP. BX has new PSP segment.
-        mov ax, [bp + 8] ; Original BX from stack
+        mov ax, [bp + 12] ; Original BX from stack
         mov [current_psp - KERNEL_PHYSICAL], ax
         ; no jmp needed, falls through
 
@@ -200,8 +249,10 @@ isr_%1:
     call print_string_com1
 
     ; Return success by clearing carry flag on stack
-    and word [bp + 20], 0xFFFE
+    and word [bp + 24], 0xFFFE
 
+    pop es
+    pop ds
     pop di
     pop si
     pop bp
@@ -224,6 +275,9 @@ msg_prefix db 'oInterrupt 0x', 0
 msg_suffix_general db ' called', 0
 msg_suffix_int21 db ' called, AH=', 0
 msg_dl_suffix db ', DL=', 0
+msg_filename_suffix db ', file=', 0
+msg_ascii_suffix db ', ASCII="', 0
+msg_quote db '"', 0
 msg_crlf db 13, 10, 0
 
 print_al_hex:
