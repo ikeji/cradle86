@@ -102,6 +102,8 @@ reset_handler:
     ; --- Data ---
     boot_msg db "oBooting kernel...", 13, 10, 0
     current_psp dw 0
+    saved_ss dw 0
+    saved_sp dw 0
 
 
 print_string_com1:
@@ -139,6 +141,7 @@ print_string_com1:
 ; ---------------------------------
 %macro GEN_INT_HANDLER 1
 isr_%1:
+    cli
     push ax
     push cx
     push dx
@@ -150,11 +153,22 @@ isr_%1:
     push ds
     push es
 
-    mov bp, sp ; Use BP for stack addressing
-
-    ; Set segment register for logging
+    ; Set DS to kernel segment to access kernel variables
     mov ax, KERNEL_SEGMENT
     mov ds, ax
+
+    ; Save user stack pointer into kernel memory
+    mov [saved_ss - KERNEL_PHYSICAL], ss
+    mov [saved_sp - KERNEL_PHYSICAL], sp
+    
+    ; Switch to kernel stack
+    mov ss, ax ; ax still contains KERNEL_SEGMENT
+    mov sp, KERNEL_STACK_INIT_OFFSET
+
+    ; Use ES to access user stack
+    mov ax, [saved_ss - KERNEL_PHYSICAL]
+    mov es, ax
+    mov bp, [saved_sp - KERNEL_PHYSICAL]
 
     ; Print "Interrupt 0xXX"
     mov si, msg_prefix - KERNEL_PHYSICAL
@@ -167,7 +181,7 @@ isr_%1:
         mov si, msg_suffix_int21 - KERNEL_PHYSICAL ; " called, AH="
         call print_string_com1
         
-        mov bl, byte [bp + 18 + 1] ; Original AH from stack
+        mov bl, byte [es:bp + 18 + 1] ; Original AH from stack
         mov al, bl
         call print_al_hex
 
@@ -190,7 +204,7 @@ isr_%1:
                 ; AH=02h: Log DL
                 mov si, msg_dl_suffix - KERNEL_PHYSICAL ; ", DL="
                 call print_string_com1
-                mov bl, byte [bp + 14] ; Original DL from stack
+                mov bl, byte [es:bp + 14] ; Original DL from stack
                 mov al, bl
                 call print_al_hex
         
@@ -218,8 +232,8 @@ isr_%1:
 
         ; Temporarily switch DS to print filename from user space
         push ds
-        mov ds, [bp + 2]  ; caller's DS
-        mov si, [bp + 14] ; caller's DX
+        mov ds, [es:bp + 2]  ; caller's DS
+        mov si, [es:bp + 14] ; caller's DX
         call print_string_com1
         pop ds
 
@@ -232,7 +246,7 @@ isr_%1:
 
     .int21_ah50:
         ; AH=50h: Set PSP. BX has new PSP segment.
-        mov ax, [bp + 12] ; Original BX from stack
+        mov ax, [es:bp + 12] ; Original BX from stack
         mov [current_psp - KERNEL_PHYSICAL], ax
         ; no jmp needed, falls through
 
@@ -249,14 +263,18 @@ isr_%1:
     call print_string_com1
 
     ; Return success by clearing carry flag on stack
-    and word [bp + 24], 0xFFFE
+    and word [es:bp + 24], 0xFFFE
+
+    ; Restore user stack before popping registers
+    mov ss, [saved_ss - KERNEL_PHYSICAL]
+    mov sp, [saved_sp - KERNEL_PHYSICAL]
 
     pop es
     pop ds
     pop di
     pop si
     pop bp
-    pop sp
+    add sp, 2   ; Skip pop sp
     pop bx
     pop dx
     pop cx
@@ -323,15 +341,15 @@ print_char_com1:
     ; Clobbers: none
     push ax
     push dx
-    mov ah, al ; save char
-
-.wait:
-    mov dx, COM1 + 5
-    in al, dx
-    test al, 0x20
-    jz .wait
-
-    mov al, ah ; restore char
+;    mov ah, al ; save char
+;
+;.wait:
+;    mov dx, COM1 + 5
+;    in al, dx
+;    test al, 0x20
+;    jz .wait
+;
+;    mov al, ah ; restore char
     mov dx, COM1
     out dx, al
 

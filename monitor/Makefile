@@ -81,8 +81,14 @@ run-io-c: $(TARGET_C_BIN)
 	@echo "--- Starting Test Runner with C binary (I/O Log Mode) ---"
 	$(PYTHON) $(RUNNER) --port $(PORT) --binfile $(TARGET_C_BIN) --mode io
 
-run-mini-dos:
+run-mini-dos-full:
 	$(PYTHON) $(RUNNER) --port $(PORT) --binfile ../mini-dos/mini-dos.img --mode full
+
+run-mini-dos-io:
+	$(PYTHON) $(RUNNER) --port $(PORT) --binfile ../mini-dos/mini-dos.img --mode io
+
+run-mini-dos:
+	$(PYTHON) $(RUNNER) --port $(PORT) --binfile ../mini-dos/mini-dos.img --mode com
 
 # --- Test Retrieve Target ---
 test-retrieve:
