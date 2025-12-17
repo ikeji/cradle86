@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--port', default='/dev/ttyACM0', help='Serial port for the Pico')
     parser.add_argument('--baud', default=115200, type=int, help='Serial baud rate')
     parser.add_argument('--binfile', required=True, help='V30 binary file to upload')
-    parser.add_argument('--mode', default='full', choices=['full', 'io'], help='Logging mode for autotest (full or io)')
+    parser.add_argument('--mode', default='full', choices=['full', 'io', 'com'], help='Logging mode for autotest (full, io, or com)')
     args = parser.parse_args()
 
     try:
@@ -35,7 +35,7 @@ def main():
 
     # 1. Send 'autotest' command to Pico
     ser.reset_input_buffer()
-    if args.mode == 'io':
+    if args.mode in ['io', 'com']:
         command = b'\r\nautotest io\r\n'
         print(">>> Sent 'autotest io' command. Waiting for Pico to be ready...")
     else:
@@ -124,9 +124,12 @@ def main():
         print(f">>> Log Received. Total bytes: {len(log_buffer)}")
 
     # 5. Decode and print the log
-    print("\n=== Execution Log (Decoded on PC) ===")
-    print(f"{'Cycle':<5} | {'Address':<7} | {'BHE':<3} | {'A0':<2} | {'Type':<6} | {'Access':<9} | {'Data':<4} | {'Value':<10} |")
-    print("-" * 69)
+    if args.mode != 'com':
+        print("\n=== Execution Log (Decoded on PC) ===")
+        print(f"{'Cycle':<5} | {'Address':<7} | {'BHE':<3} | {'A0':<2} | {'Type':<6} | {'Access':<9} | {'Data':<4} | {'Value':<10} |")
+        print("-" * 69)
+    else:
+        print("\n=== COM Port Output ===")
 
     # Corresponds to enum LogType in C++
     type_map = {
@@ -152,7 +155,7 @@ def main():
         # Type 0 is an unused entry, so we can stop.
         if btype == 0:
             break
-        # Type is EOL came from xmode0m
+        # Type is EOL came from xmodem
         if btype == 0x1A:
             break
 
@@ -173,31 +176,42 @@ def main():
                 access_type_str = "LOW_BYTE"
             # else: BHE# is High, A0 is High -> INVALID (default)
         
-        # Format BHE# and A0 for display
-        bhe_display_str = "1" if bhe_val else "0"
-        a0_display_str = "1" if a0_val else "0"
-
-        # Calculate value to display in "Value" column
-        value_to_display_str = "----"
         byte_value = None
         if access_type_str == "HIGH_BYTE":
             byte_value = data >> 8
-            value_to_display_str = f"{byte_value:02X}"
         elif access_type_str == "LOW_BYTE":
             byte_value = data & 0xFF
-            value_to_display_str = f"{byte_value:02X}"
-        elif access_type_str == "WORD":
-            value_to_display_str = f"{data:04X}"
-        
-        if byte_value is not None and 32 <= byte_value <= 126: # Printable ASCII
-            value_to_display_str += f" '{chr(byte_value)}'"
-        # For "INVALID", it remains "----"
 
-        print(f"{count:<5} | {f'{addr:05X}':<7} | {bhe_display_str:<3} | {a0_display_str:<2} | {type_str:<6} | {access_type_str:<9} | {f'{data:04X}':<4} | {value_to_display_str:<10} |")
-        count += 1
+        if args.mode == 'com':
+            if addr == 0x3F8 and type_str == "IO_WR" and byte_value is not None:
+                sys.stdout.write(chr(byte_value))
+                sys.stdout.flush()
+        else:
+            # Format BHE# and A0 for display
+            bhe_display_str = "1" if bhe_val else "0"
+            a0_display_str = "1" if a0_val else "0"
+
+            # Calculate value to display in "Value" column
+            value_to_display_str = "----"
+            if access_type_str == "HIGH_BYTE":
+                value_to_display_str = f"{byte_value:02X}"
+            elif access_type_str == "LOW_BYTE":
+                value_to_display_str = f"{byte_value:02X}"
+            elif access_type_str == "WORD":
+                value_to_display_str = f"{data:04X}"
+            
+            if byte_value is not None and 32 <= byte_value <= 126: # Printable ASCII
+                value_to_display_str += f" '{chr(byte_value)}'"
+            # For "INVALID", it remains "----"
+
+            print(f"{count:<5} | {f'{addr:05X}':<7} | {bhe_display_str:<3} | {a0_display_str:<2} | {type_str:<6} | {access_type_str:<9} | {f'{data:04X}':<4} | {value_to_display_str:<10} |")
+            count += 1
     
-    print("-" * 69)
-    print(f"Total valid cycles logged: {count}")
+    if args.mode != 'com':
+        print("-" * 69)
+        print(f"Total valid cycles logged: {count}")
+    else:
+        print()
 
 if __name__ == "__main__":
     main()

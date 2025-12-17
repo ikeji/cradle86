@@ -82,7 +82,7 @@ run-io-c: $(TARGET_C_BIN)
 	$(PYTHON) $(RUNNER) --port $(PORT) --binfile $(TARGET_C_BIN) --mode io
 
 run-mini-dos:
-	$(PYTHON) $(RUNNER) --port $(PORT) --binfile ../mini-dos/mini-dos.img --mode io
+	$(PYTHON) $(RUNNER) --port $(PORT) --binfile ../mini-dos/mini-dos.img --mode full
 
 # --- Test Retrieve Target ---
 test-retrieve:

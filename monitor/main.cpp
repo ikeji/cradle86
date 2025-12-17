@@ -69,7 +69,7 @@ const FreqSetting freq_table[] = {{8000000, 4, 6.25f},  {4000000, 4, 12.5f},
                                   {500000, 4, 100.0f},  {250000, 99, 10.0f},
                                   {125000, 99, 20.0f},  {50000, 99, 50.0f},
                                   {10000, 249, 100.0f}};
-static uint32_t current_freq_hz = 125000;
+static uint32_t current_freq_hz = 50000;
 
 // --- XMODEM Constants ---
 #define SOH 0x01
