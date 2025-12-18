@@ -17,6 +17,7 @@ times (256 * 4) - ($ - $$) db 0
 
 ; --- Constants ---
 COM1 equ 0x3F8 ; I/O port for character output (COM1)
+COM2 equ 0x2F8 ; I/O port for character output (COM2)
 
 ; --- Memory Layout ---
 ; Interrupt Vector Table (IVT)
@@ -142,16 +143,16 @@ print_string_com1:
 %macro GEN_INT_HANDLER 1
 isr_%1:
     cli
-    push ax
-    push cx
-    push dx
-    push bx
-    push sp
-    push bp
-    push si
-    push di
-    push ds
-    push es
+    push ax                     ; [es:bp + 18]
+    push cx                     ; [es:bp + 16]
+    push dx                     ; [es:bp + 14]
+    push bx                     ; [es:bp + 12]
+    push sp                     ; [es:bp + 10]
+    push bp                     ; [es:bp + 8]
+    push si                     ; [es:bp + 6]
+    push di                     ; [es:bp + 4]
+    push ds                     ; [es:bp + 2]
+    push es                     ; [es:bp + 0]
 
     ; Set DS to kernel segment to access kernel variables
     mov ax, KERNEL_SEGMENT
@@ -192,6 +193,15 @@ isr_%1:
                 cmp bl, 0x3D
                 je .int21_ah3d
         
+                cmp bl, 0x3E
+                je .int21_ah3e
+        
+                cmp bl, 0x3F
+                je .int21_ah3f
+        
+                cmp bl, 0x42
+                je .int21_ah42
+        
                 cmp bl, 0x49
                 je .int21_ah49
         
@@ -224,19 +234,93 @@ isr_%1:
                 call print_string_com1
         
             .int21_ah02_ascii_done:
+                ; Also output to COM2
+                mov al, bl ; Original DL is still in bl
+                push dx
+                mov dx, COM2
+                out dx, al
+                pop dx
                 jmp .int21_done
     .int21_ah3d:
-        ; AH=3Dh: Open file. DS:DX points to filename.
+        ; AH=3Dh: Open file.
+        ; Log AL
+        mov si, msg_al_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov al, byte [es:bp + 18] ; Original AL from stack
+        call print_al_hex
+
+        ; Log filename
         mov si, msg_filename_suffix - KERNEL_PHYSICAL
         call print_string_com1
-
-        ; Temporarily switch DS to print filename from user space
         push ds
         mov ds, [es:bp + 2]  ; caller's DS
         mov si, [es:bp + 14] ; caller's DX
         call print_string_com1
         pop ds
 
+        ; Return file handle 42 in AX
+        mov word [es:bp + 18], 42
+        jmp .int21_done
+
+    .int21_ah3e:
+        ; AH=3Eh: Close file.
+        mov si, msg_bx_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov ax, [es:bp + 12] ; Original BX
+        call print_ax_hex
+        jmp .int21_done
+
+    .int21_ah3f:
+        ; AH=3Fh: Read from file/device
+        mov si, msg_bx_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov ax, [es:bp + 12] ; Original BX
+        call print_ax_hex
+
+        mov si, msg_cx_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov ax, [es:bp + 16] ; Original CX
+        call print_ax_hex
+
+        mov si, msg_ds_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov ax, [es:bp + 2] ; Original DS
+        call print_ax_hex
+        
+        mov si, msg_dx_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov ax, [es:bp + 14] ; Original DX
+        call print_ax_hex
+
+        ; Return CX in AX
+        mov ax, [es:bp + 16]
+        mov word [es:bp + 18], ax
+        jmp .int21_done
+
+    .int21_ah42:
+        ; AH=42h: LSEEK
+        mov si, msg_al_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov al, byte [es:bp + 18]
+        call print_al_hex
+
+        mov si, msg_bx_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov ax, [es:bp + 12] ; Original BX
+        call print_ax_hex
+
+        mov si, msg_cxdx_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov ax, [es:bp + 16] ; Original CX
+        call print_ax_hex
+        mov ax, [es:bp + 14] ; Original DX
+        call print_ax_hex
+
+        ; Return CX:DX in DX:AX
+        mov ax, [es:bp + 16] ; old CX
+        mov bx, [es:bp + 14] ; old DX
+        mov [es:bp + 14], ax ; new DX on stack = old CX
+        mov [es:bp + 18], bx ; new AX on stack = old DX
         jmp .int21_done
 
     .int21_ah49:
@@ -292,11 +376,26 @@ isr_%1:
 msg_prefix db 'oInterrupt 0x', 0
 msg_suffix_general db ' called', 0
 msg_suffix_int21 db ' called, AH=', 0
+msg_al_suffix db ', AL=', 0
+msg_bx_suffix db ', BX=', 0
+msg_cx_suffix db ', CX=', 0
+msg_dx_suffix db ', DX=', 0
+msg_cxdx_suffix db ', CX:DX=', 0
+msg_ds_suffix db ', DS=', 0
 msg_dl_suffix db ', DL=', 0
 msg_filename_suffix db ', file=', 0
 msg_ascii_suffix db ', ASCII="', 0
 msg_quote db '"', 0
 msg_crlf db 13, 10, 0
+
+print_ax_hex:
+    ; Prints AX as a four-digit hex number.
+    push ax
+    mov al, ah
+    call print_al_hex
+    pop ax
+    call print_al_hex
+    ret
 
 print_al_hex:
     ; Prints AL as a two-digit hex number.
