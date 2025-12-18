@@ -105,6 +105,14 @@ reset_handler:
     current_psp dw 0
     saved_ss dw 0
     saved_sp dw 0
+    free_mem_start_segment dw 0x2000 ; Start of free memory heap (physical 0x20000)
+    file_seek_pointer_42 dd 0 ; 32-bit file pointer for handle 42
+
+in_memory_command_com:
+    incbin "COMMAND.COM"
+in_memory_command_com_end:
+IN_MEMORY_COMMAND_COM_SIZE equ in_memory_command_com_end - in_memory_command_com
+
 
 
 print_string_com1:
@@ -190,6 +198,9 @@ isr_%1:
                 cmp bl, 0x02
                 je .int21_ah02
         
+                cmp bl, 0x09
+                je .int21_ah09
+        
                 cmp bl, 0x3D
                 je .int21_ah3d
         
@@ -202,14 +213,73 @@ isr_%1:
                 cmp bl, 0x42
                 je .int21_ah42
         
+                cmp bl, 0x48
+                je .int21_ah48
+        
                 cmp bl, 0x49
                 je .int21_ah49
+        
+                cmp bl, 0x4A
+                je .int21_ah4a
         
                 cmp bl, 0x50
                 je .int21_ah50
                 
                 jmp .int21_done ; Default: do nothing
         
+            .int21_ah09:
+                ; AH=09h: Print $-terminated string
+                ; Log DS and DX
+                mov si, msg_ds_suffix - KERNEL_PHYSICAL
+                call print_string_com1
+                mov ax, [es:bp + 2] ; Original DS
+                call print_ax_hex
+                mov si, msg_dx_suffix - KERNEL_PHYSICAL
+                call print_string_com1
+                mov ax, [es:bp + 14] ; Original DX
+                call print_ax_hex
+
+                ; Log string content to COM1
+                mov si, msg_string_content_suffix - KERNEL_PHYSICAL
+                call print_string_com1
+                
+                push ds
+                push si
+                mov ds, [es:bp + 2]  ; user's DS
+                mov si, [es:bp + 14] ; user's DX
+            .log_loop:
+                lodsb
+                cmp al, '$'
+                je .log_loop_done
+                ; Check if AL is a printable ASCII character (0x20-0x7E)
+                cmp al, 0x20
+                jl .skip_log_char ; Less than space, not printable
+                cmp al, 0x7E
+                jg .skip_log_char ; Greater than tilde, not printable
+                call print_char_com1
+            .skip_log_char:
+                jmp .log_loop
+            .log_loop_done:
+                mov si, msg_quote - KERNEL_PHYSICAL
+                call print_string_com1
+                
+                ; Output string to COM2
+                mov si, [es:bp + 14] ; reset pointer to user's DX
+            .com2_loop:
+                lodsb
+                cmp al, '$'
+                je .com2_loop_done
+                push dx
+                mov dx, COM2
+                out dx, al
+                pop dx
+                jmp .com2_loop
+            .com2_loop_done:
+
+                pop si
+                pop ds
+                jmp .int21_done
+
             .int21_ah02:
                 ; AH=02h: Log DL
                 mov si, msg_dl_suffix - KERNEL_PHYSICAL ; ", DL="
@@ -272,43 +342,74 @@ isr_%1:
 
     .int21_ah3f:
         ; AH=3Fh: Read from file/device
+        ; Log stuff first
         mov si, msg_bx_suffix - KERNEL_PHYSICAL
         call print_string_com1
         mov ax, [es:bp + 12] ; Original BX
         call print_ax_hex
-
         mov si, msg_cx_suffix - KERNEL_PHYSICAL
         call print_string_com1
         mov ax, [es:bp + 16] ; Original CX
         call print_ax_hex
-
         mov si, msg_ds_suffix - KERNEL_PHYSICAL
         call print_string_com1
         mov ax, [es:bp + 2] ; Original DS
         call print_ax_hex
-        
         mov si, msg_dx_suffix - KERNEL_PHYSICAL
         call print_string_com1
         mov ax, [es:bp + 14] ; Original DX
         call print_ax_hex
 
-        ; Return CX in AX
+        ; Check if file handle is 42
+        mov ax, [es:bp + 12] ; Original BX
+        cmp ax, 42
+        jne .read_default
+
+    .read_handle_42:
+        cld ; Ensure forward string operations
+        
+        ; Set source DS:SI to kernel data location
+        ; DS is already KERNEL_SEGMENT from ISR entry
+        mov si, [file_seek_pointer_42 - KERNEL_PHYSICAL]
+        add si, in_memory_command_com - KERNEL_PHYSICAL
+        ; TODO: Handle 32-bit pointer if file > 64k
+
+        ; Set destination ES:DI to user buffer
+        push es
+        mov es, [es:bp + 2]  ; User's DS
+        mov di, [es:bp + 14] ; User's DX
+        
+        ; Set count CX
+        mov cx, [es:bp + 16]
+        
+        ; Copy data
+        rep movsb
+        
+        ; Update file pointer
+        mov ax, [es:bp + 16] ; CX (bytes read)
+        add [file_seek_pointer_42 - KERNEL_PHYSICAL], ax
+        adc word [file_seek_pointer_42 + 2 - KERNEL_PHYSICAL], 0
+        
+        pop es
+        ; Fall through to default behavior to set return AX
+
+    .read_default:
+        ; Default logic: return requested bytes (CX) in AX
         mov ax, [es:bp + 16]
         mov word [es:bp + 18], ax
         jmp .int21_done
 
     .int21_ah42:
         ; AH=42h: LSEEK
+        ; Log stuff first
         mov si, msg_al_suffix - KERNEL_PHYSICAL
         call print_string_com1
         mov al, byte [es:bp + 18]
         call print_al_hex
-
         mov si, msg_bx_suffix - KERNEL_PHYSICAL
         call print_string_com1
         mov ax, [es:bp + 12] ; Original BX
         call print_ax_hex
-
         mov si, msg_cxdx_suffix - KERNEL_PHYSICAL
         call print_string_com1
         mov ax, [es:bp + 16] ; Original CX
@@ -316,16 +417,127 @@ isr_%1:
         mov ax, [es:bp + 14] ; Original DX
         call print_ax_hex
 
-        ; Return CX:DX in DX:AX
+        ; Check if file handle is 42
+        mov ax, [es:bp + 12] ; Original BX
+        cmp ax, 42
+        jne .lseek_default
+
+    .lseek_handle_42:
+        ; Get offset from CX:DX
+        mov ax, [es:bp + 14] ; old DX (low word of offset)
+        mov dx, [es:bp + 16] ; old CX (high word of offset)
+        
+        ; Get seek mode from AL
+        mov cl, byte [es:bp + 18]
+
+        ; Calculate new pointer based on mode
+        cmp cl, 0
+        je .seek_from_start
+        cmp cl, 1
+        je .seek_from_current
+        cmp cl, 2
+        je .seek_from_end
+        
+        ; Invalid mode, jump to default which does nothing smart
+        jmp .lseek_default
+
+    .seek_from_start:
+        ; new_ptr = offset, so DX:AX already holds it.
+        jmp .lseek_update_return
+        
+    .seek_from_current:
+        ; new_ptr = current + offset
+        add ax, [file_seek_pointer_42 - KERNEL_PHYSICAL]
+        adc dx, [file_seek_pointer_42 + 2 - KERNEL_PHYSICAL]
+        jmp .lseek_update_return
+        
+    .seek_from_end:
+        ; new_ptr = size + offset
+        add ax, IN_MEMORY_COMMAND_COM_SIZE
+        adc dx, 0
+        jmp .lseek_update_return
+        
+    .lseek_update_return:
+        ; Save new pointer
+        mov [file_seek_pointer_42 - KERNEL_PHYSICAL], ax
+        mov [file_seek_pointer_42 + 2 - KERNEL_PHYSICAL], dx
+        
+        ; Return new pointer in DX:AX
+        mov [es:bp + 14], dx ; set return DX
+        mov [es:bp + 18], ax ; set return AX
+        jmp .int21_done
+
+    .lseek_default:
+        ; Default logic for other handles (just swaps cx:dx to dx:ax)
         mov ax, [es:bp + 16] ; old CX
         mov bx, [es:bp + 14] ; old DX
         mov [es:bp + 14], ax ; new DX on stack = old CX
         mov [es:bp + 18], bx ; new AX on stack = old DX
         jmp .int21_done
 
+    .int21_ah48:
+        ; AH=48h: Allocate Memory
+        mov si, msg_bx_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov ax, [es:bp + 12] ; Original BX (requested size in paragraphs)
+        call print_ax_hex
+
+        ; --- Separator for arguments and return values ---
+        mov si, msg_separator - KERNEL_PHYSICAL
+        call print_string_com1
+
+        ; Get current free segment for the allocated block
+        mov cx, [free_mem_start_segment - KERNEL_PHYSICAL]
+        mov [es:bp + 18], cx ; Set return AX to allocated segment
+
+        ; Advance the free memory pointer
+        add [free_mem_start_segment - KERNEL_PHYSICAL], ax ; ax still has original BX
+
+        ; Return max available block size in BX
+        mov dx, 0x0FFF
+        sub dx, [free_mem_start_segment - KERNEL_PHYSICAL]
+        mov [es:bp + 12], dx ; set return BX
+
+        ; --- Log return values ---
+        mov si, msg_ax_suffix - KERNEL_PHYSICAL ; Log AX
+        call print_string_com1
+        mov ax, [es:bp + 18] ; Get return AX from stack
+        call print_ax_hex
+
+        mov si, msg_bx_suffix - KERNEL_PHYSICAL ; Log BX
+        call print_string_com1
+        mov ax, [es:bp + 12] ; Get return BX from stack
+        call print_ax_hex
+
+        jmp .int21_done
+
     .int21_ah49:
         ; AH=49h: Free Memory. ES has segment.
         ; No action needed for stub.
+        jmp .int21_done
+
+    .int21_ah4a:
+        ; AH=4Ah: Resize Memory Block
+        mov si, msg_es_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov ax, [es:bp + 0] ; Original ES
+        call print_ax_hex
+        
+        mov si, msg_bx_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov ax, [es:bp + 12] ; Original BX (new size)
+        call print_ax_hex
+
+        ; Update free memory pointer = block_segment + new_size
+        mov cx, [es:bp + 0]  ; Original ES (block segment)
+        add cx, ax ; ax has new size
+        mov [free_mem_start_segment - KERNEL_PHYSICAL], cx
+
+        ; Return max available block size in BX
+        mov dx, 0x0FFF
+        sub dx, [free_mem_start_segment - KERNEL_PHYSICAL]
+        mov [es:bp + 12], dx ; set return BX
+
         jmp .int21_done
 
     .int21_ah50:
@@ -382,10 +594,14 @@ msg_cx_suffix db ', CX=', 0
 msg_dx_suffix db ', DX=', 0
 msg_cxdx_suffix db ', CX:DX=', 0
 msg_ds_suffix db ', DS=', 0
+msg_es_suffix db ', ES=', 0
+msg_ax_suffix db ', AX=', 0
+msg_separator db ' - ', 0
 msg_dl_suffix db ', DL=', 0
 msg_filename_suffix db ', file=', 0
 msg_ascii_suffix db ', ASCII="', 0
 msg_quote db '"', 0
+msg_string_content_suffix db ', string="', 0
 msg_crlf db 13, 10, 0
 
 print_ax_hex:
