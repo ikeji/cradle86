@@ -38,6 +38,10 @@ COMMAND_COM_PHYSICAL     equ 0x01100
 COMMAND_COM_SEGMENT      equ 0x0100
 COMMAND_COM_OFFSET       equ  0x0100
 
+; This is the top of the 64KB user memory area
+COMMAND_END_PHYSICAL     equ 0x10FFF
+COMMAND_END_SEGMENT      equ 0x10FF
+
 ; Kernel Memory Layout
 KERNEL_PHYSICAL          equ 0x11000
 KERNEL_SEGMENT           equ 0x1100
@@ -91,6 +95,11 @@ reset_handler:
     ; INT 20h (Program Terminate) at offset 0
     mov word [es:COMMAND_PSP_OFFSET + 0x00], 0x20CD
 
+    ; PSP: Segment address of the first free paragraph after program's allocation
+    mov ax, COMMAND_END_SEGMENT
+    add ax, 1
+    mov word [es:COMMAND_PSP_OFFSET + 0x0002], ax
+
     ; Command line at offset 0x80: length=0, terminator=CR
     mov byte [es:COMMAND_PSP_OFFSET + 0x80], 0
     mov byte [es:COMMAND_PSP_OFFSET + 0x81], 0x0D
@@ -105,7 +114,7 @@ reset_handler:
     current_psp dw 0
     saved_ss dw 0
     saved_sp dw 0
-    free_mem_start_segment dw 0x2000 ; Start of free memory heap (physical 0x20000)
+    free_mem_start_segment dw COMMAND_END_SEGMENT
     file_seek_pointer_42 dd 0 ; 32-bit file pointer for handle 42
 
 in_memory_command_com:
@@ -184,6 +193,10 @@ isr_%1:
     call print_string_com1
     mov al, %1
     call print_al_hex
+
+    ; Default to success by clearing carry flag.
+    ; INT 21h handlers can override this by setting it.
+    and word [es:bp + 24], 0xFFFE
 
     %if %1 == 0x21
         ; For INT 21h, print AH
@@ -486,6 +499,15 @@ isr_%1:
         mov si, msg_separator - KERNEL_PHYSICAL
         call print_string_com1
 
+        ; Calculate available memory in paragraphs. Top of memory is defined by COMMAND_END_SEGMENT.
+        mov dx, COMMAND_END_SEGMENT
+        sub dx, [free_mem_start_segment - KERNEL_PHYSICAL]
+
+        ; Compare requested size (AX, from original BX) with available size (DX)
+        cmp ax, dx
+        ja .alloc_fail ; Unsigned compare: if requested > available, fail
+
+        ; --- Success Path ---
         ; Get current free segment for the allocated block
         mov cx, [free_mem_start_segment - KERNEL_PHYSICAL]
         mov [es:bp + 18], cx ; Set return AX to allocated segment
@@ -493,20 +515,33 @@ isr_%1:
         ; Advance the free memory pointer
         add [free_mem_start_segment - KERNEL_PHYSICAL], ax ; ax still has original BX
 
-        ; Return max available block size in BX
-        mov dx, 0x0FFF
-        sub dx, [free_mem_start_segment - KERNEL_PHYSICAL]
-        mov [es:bp + 12], dx ; set return BX
-
-        ; --- Log return values ---
-        mov si, msg_ax_suffix - KERNEL_PHYSICAL ; Log AX
+        ; Log return values
+        mov si, msg_ax_suffix - KERNEL_PHYSICAL
         call print_string_com1
-        mov ax, [es:bp + 18] ; Get return AX from stack
+        mov ax, [es:bp + 18]
         call print_ax_hex
 
-        mov si, msg_bx_suffix - KERNEL_PHYSICAL ; Log BX
+        jmp .int21_done
+
+    .alloc_fail:
+        ; --- Failure Path ---
+        ; Set carry flag to indicate error
+        or word [es:bp + 24], 1
+
+        ; Return error code 8 (Insufficient Memory) in AX
+        mov word [es:bp + 18], 8
+
+        ; Return max available block size in BX (which is in DX)
+        mov [es:bp + 12], dx
+
+        ; Log return values
+        mov si, msg_ax_suffix - KERNEL_PHYSICAL
         call print_string_com1
-        mov ax, [es:bp + 12] ; Get return BX from stack
+        mov ax, [es:bp + 18]
+        call print_ax_hex
+        mov si, msg_bx_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov ax, [es:bp + 12]
         call print_ax_hex
 
         jmp .int21_done
@@ -534,7 +569,7 @@ isr_%1:
         mov [free_mem_start_segment - KERNEL_PHYSICAL], cx
 
         ; Return max available block size in BX
-        mov dx, 0x0FFF
+        mov dx, COMMAND_END_SEGMENT
         sub dx, [free_mem_start_segment - KERNEL_PHYSICAL]
         mov [es:bp + 12], dx ; set return BX
 
@@ -557,9 +592,6 @@ isr_%1:
     ; Print CR+LF
     mov si, msg_crlf - KERNEL_PHYSICAL
     call print_string_com1
-
-    ; Return success by clearing carry flag on stack
-    and word [es:bp + 24], 0xFFFE
 
     ; Restore user stack before popping registers
     mov ss, [saved_ss - KERNEL_PHYSICAL]
