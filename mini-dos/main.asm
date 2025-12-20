@@ -116,6 +116,7 @@ reset_handler:
     saved_sp dw 0
     free_mem_start_segment dw COMMAND_END_SEGMENT
     file_seek_pointer_42 dd 0 ; 32-bit file pointer for handle 42
+    canned_input_state dw 0 ; State for canned input for INT 21h, AH=0Ah
 
 in_memory_command_com:
     incbin "COMMAND.COM"
@@ -214,6 +215,9 @@ isr_%1:
                 cmp bl, 0x09
                 je .int21_ah09
         
+                cmp bl, 0x0A
+                je .int21_ah0a
+        
                 cmp bl, 0x3D
                 je .int21_ah3d
         
@@ -297,6 +301,48 @@ isr_%1:
 
                 pop si
                 pop ds
+                jmp .int21_done
+
+            .int21_ah0a:
+                ; AH=0Ah: Buffered Input. We provide canned input.
+                ; Log DS:DX
+                mov si, msg_ds_suffix - KERNEL_PHYSICAL
+                call print_string_com1
+                mov ax, [es:bp + 2] ; Original DS
+                call print_ax_hex
+                mov si, msg_dx_suffix - KERNEL_PHYSICAL
+                call print_string_com1
+                mov ax, [es:bp + 14] ; Original DX
+                call print_ax_hex
+
+                ; Get user buffer pointer to ES:DI
+                push es
+                mov es, [es:bp + 2]  ; user's DS
+                mov di, [es:bp + 14] ; user's DX
+
+                ; Check state to decide which string to use
+                mov ax, [canned_input_state - KERNEL_PHYSICAL]
+                cmp ax, 0
+                je .use_input_0
+
+            .use_input_1:
+                ; Use "r"
+                mov byte [es:di+1], 1 ; Actual length
+                mov byte [es:di+2], 'r'
+                mov byte [es:di+3], 0x0D
+                mov word [canned_input_state - KERNEL_PHYSICAL], 0 ; Reset state
+                jmp .ah0a_done
+
+            .use_input_0:
+                ; Use "u"
+                mov byte [es:di+1], 1 ; Actual length
+                mov byte [es:di+2], 'u'
+                mov byte [es:di+3], 0x0D
+                mov word [canned_input_state - KERNEL_PHYSICAL], 1 ; Next state is 1
+                ; jmp .ah0a_done (fallthrough)
+
+            .ah0a_done:
+                pop es
                 jmp .int21_done
 
             .int21_ah02:
