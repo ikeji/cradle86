@@ -235,6 +235,9 @@ isr_%1:
                 cmp bl, 0x4A
                 je .int21_ah4a
         
+                cmp bl, 0x25
+                je .int21_ah25
+
                 cmp bl, 0x50
                 je .int21_ah50
                 
@@ -579,7 +582,49 @@ isr_%1:
         ; AH=50h: Set PSP. BX has new PSP segment.
         mov ax, [es:bp + 12] ; Original BX from stack
         mov [current_psp - KERNEL_PHYSICAL], ax
-        ; no jmp needed, falls through
+        jmp .int21_done
+
+    .int21_ah25:
+        ; AH=25h: Set Interrupt Vector
+        ; Log AL, DS, DX
+        mov si, msg_al_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov al, byte [es:bp + 18] ; Original AL from stack
+        call print_al_hex
+
+        mov si, msg_ds_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov ax, [es:bp + 2] ; Original DS from stack
+        call print_ax_hex
+
+        mov si, msg_dx_suffix - KERNEL_PHYSICAL
+        call print_string_com1
+        mov ax, [es:bp + 14] ; Original DX from stack
+        call print_ax_hex
+
+        ; Get values before changing ES
+        mov al, byte [es:bp + 18] ; Interrupt number
+        mov dx, [es:bp + 14]      ; New handler offset
+        mov cx, [es:bp + 2]       ; New handler segment
+
+        push es ; Save user's SS (currently in ES)
+        
+        ; Calculate IVT offset in DI
+        xor ah, ah
+        mov bh, 4
+        mul bh    ; ax = al * 4
+        mov di, ax
+        
+        ; Set ES to 0 for IVT access
+        xor ax, ax
+        mov es, ax
+        
+        ; Write new vector (Offset then Segment)
+        mov [es:di], dx
+        mov [es:di+2], cx
+        
+        pop es ; Restore user's SS to ES
+        jmp .int21_done
 
     .int21_done:
 
