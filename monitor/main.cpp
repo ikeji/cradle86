@@ -17,7 +17,7 @@
 // --- Config ---
 #define VERSION_STR "0.0.1"
 #define RAM_SIZE 0x20000 // 128KB Virtual RAM
-#define MAX_CYCLES 5000  // Log buffer size
+#define MAX_CYCLES 4000 // Log buffer size
 
 // --- Pin Definitions ---
 #define PIN_AD_BASE 0
@@ -69,7 +69,7 @@ const FreqSetting freq_table[] = {{8000000, 4, 6.25f},  {4000000, 4, 12.5f},
                                   {500000, 4, 100.0f},  {250000, 99, 10.0f},
                                   {125000, 99, 20.0f},  {50000, 99, 50.0f},
                                   {10000, 249, 100.0f}};
-static uint32_t current_freq_hz = 125000;
+static uint32_t current_freq_hz = 500000;
 
 // --- XMODEM Constants ---
 #define SOH 0x01
@@ -183,6 +183,7 @@ void setup_clock(uint32_t freq_hz) {
 #define CMD_RUN_FULLLOG 1 // Run with full memory and I/O logging.
 #define CMD_RUN_NOLOG 2   // Run without logging.
 #define CMD_RUN_IOLOG 3   // Run with I/O logging only.
+#define CMD_RUN_COMLOG 4   // Run with COM2 port logging only.
 
 /**
  * @brief Core 1のエントリポイント。V30バスサイクルをエミュレートし、Core
@@ -221,7 +222,7 @@ void core1_entry() {
     int logged_cycles = 0;
     int bus_cycles = 0;
 
-    enum LoggingMode { NO_LOG, IO_LOG, FULL_LOG };
+    enum LoggingMode { NO_LOG, IO_LOG, FULL_LOG, COM_LOG };
     LoggingMode logging_mode;
 
     switch (command) {
@@ -233,6 +234,9 @@ void core1_entry() {
       break;
     case CMD_RUN_FULLLOG:
       logging_mode = FULL_LOG;
+      break;
+    case CMD_RUN_COMLOG:
+      logging_mode = COM_LOG;
       break;
     default:
       // Unknown command, ensure loop terminates immediately.
@@ -302,7 +306,9 @@ void core1_entry() {
 
           if (logging_mode != NO_LOG) {
             bool should_log =
-                (logging_mode == FULL_LOG) || (logging_mode == IO_LOG && is_io);
+                (logging_mode == FULL_LOG) ||
+                (logging_mode == IO_LOG && is_io) ||
+                (logging_mode == COM_LOG && is_io && addr == 0x2F8);
             if (should_log) {
               uint8_t ctrl_flags =
                   (pins & (1u << PIN_BHE)) ? 0 : 1; // 1 if BHE is low
@@ -341,7 +347,9 @@ void core1_entry() {
 
           if (logging_mode != NO_LOG) {
             bool should_log =
-                (logging_mode == FULL_LOG) || (logging_mode == IO_LOG && is_io);
+                (logging_mode == FULL_LOG) ||
+                (logging_mode == IO_LOG && is_io) ||
+                (logging_mode == COM_LOG && is_io && addr == 0x2F8);
             if (should_log) {
               uint8_t ctrl_flags =
                   (pins & (1u << PIN_BHE)) ? 0 : 1; // 1 if BHE is low
@@ -1286,6 +1294,9 @@ int main() {
       if (strcmp(args_ptr, "io") == 0) {
         run_cmd = CMD_RUN_IOLOG;
         printf("[AUTOTEST] Mode: I/O Log\n");
+      } else if (strcmp(args_ptr, "com2") == 0) {
+        run_cmd = CMD_RUN_COMLOG;
+        printf("[AUTOTEST] Mode: COM Log\n");
       } else {
         printf("[AUTOTEST] Mode: Full Log\n");
       }

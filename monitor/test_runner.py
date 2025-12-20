@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--port', default='/dev/ttyACM0', help='Serial port for the Pico')
     parser.add_argument('--baud', default=115200, type=int, help='Serial baud rate')
     parser.add_argument('--binfile', required=True, help='V30 binary file to upload')
-    parser.add_argument('--mode', default='full', choices=['full', 'io', 'com'], help='Logging mode for autotest (full, io, or com)')
+    parser.add_argument('--mode', default='full', choices=['full', 'io', 'com', 'com2'], help='Logging mode for autotest (full, io, com or com2)')
     args = parser.parse_args()
 
     try:
@@ -38,6 +38,9 @@ def main():
     if args.mode in ['io', 'com']:
         command = b'\r\nautotest io\r\n'
         print(">>> Sent 'autotest io' command. Waiting for Pico to be ready...")
+    elif args.mode in ['com2']:
+        command = b'\r\nautotest com2\r\n'
+        print(">>> Sent 'autotest com2' command. Waiting for Pico to be ready...")
     else:
         command = b'\r\nautotest\r\n'
         print(">>> Sent 'autotest' command. Waiting for Pico to be ready...")
@@ -93,7 +96,7 @@ def main():
     pico_ready_to_send = False
     # Read lines from Pico until we see the "Ready to SEND" message or we time out.
     log_send_ready_msg = b"Ready to SEND XMODEM..."
-    for _ in range(15): # Try for up to 15 seconds
+    for _ in range(60): # Try for up to 60 seconds
         try:
             line = ser.readline()
             if line:
@@ -124,7 +127,7 @@ def main():
         print(f">>> Log Received. Total bytes: {len(log_buffer)}")
 
     # 5. Decode and print the log
-    if args.mode != 'com':
+    if args.mode != 'com' and args.mode != 'com2':
         print("\n=== Execution Log (Decoded on PC) ===")
         print(f"{'Cycle':<5} | {'Address':<7} | {'BHE':<3} | {'A0':<2} | {'Type':<6} | {'Access':<9} | {'Data':<4} | {'Value':<10} |")
         print("-" * 69)
@@ -184,6 +187,10 @@ def main():
 
         if args.mode == 'com':
             if addr == 0x3F8 and type_str == "IO_WR" and byte_value is not None:
+                sys.stdout.write(chr(byte_value))
+                sys.stdout.flush()
+        elif args.mode == 'com2':
+            if addr == 0x2F8 and type_str == "IO_WR" and byte_value is not None:
                 sys.stdout.write(chr(byte_value))
                 sys.stdout.flush()
         else:

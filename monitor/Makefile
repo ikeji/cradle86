@@ -88,7 +88,7 @@ run-mini-dos-io:
 	$(PYTHON) $(RUNNER) --port $(PORT) --binfile ../mini-dos/mini-dos.img --mode io
 
 run-mini-dos:
-	$(PYTHON) $(RUNNER) --port $(PORT) --binfile ../mini-dos/mini-dos.img --mode com
+	$(PYTHON) $(RUNNER) --port $(PORT) --binfile ../mini-dos/mini-dos.img --mode com2
 
 # --- Test Retrieve Target ---
 test-retrieve:
