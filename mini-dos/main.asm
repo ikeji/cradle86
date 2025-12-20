@@ -238,6 +238,9 @@ isr_%1:
                 cmp bl, 0x25
                 je .int21_ah25
 
+                cmp bl, 0x30
+                je .int21_ah30
+
                 cmp bl, 0x50
                 je .int21_ah50
                 
@@ -582,6 +585,14 @@ isr_%1:
         ; AH=50h: Set PSP. BX has new PSP segment.
         mov ax, [es:bp + 12] ; Original BX from stack
         mov [current_psp - KERNEL_PHYSICAL], ax
+        jmp .int21_done
+
+    .int21_ah30:
+        ; AH=30h: Get DOS Version
+        ; AL=major=2, AH=minor=11 (0Bh)
+        mov word [es:bp + 18], 0x0B02 ; Return AX=0x0B02 (v2.11)
+        mov word [es:bp + 12], 0x0000 ; Return BX=0
+        mov word [es:bp + 16], 0x0000 ; Return CX=0
         jmp .int21_done
 
     .int21_ah25:
