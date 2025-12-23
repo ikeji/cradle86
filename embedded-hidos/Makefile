@@ -1,9 +1,13 @@
 # Target boot image file
 TARGET = boot.img
 
+# Target boot disk
+DISK_TARGET = disk.img
+
 # Source system files
 VM_IO = VM_IO.SYS
 MSDOS = MSDOS.SYS
+DISK_FILES = $(VM_IO) $(MSDOS) COMMAND.COM CHKDSK.COM DEBUG.COM
 
 # --- Configuration based on idea.md ---
 
@@ -25,9 +29,12 @@ CODE_HANDLER = b'\xe7\x86\xcf'
 CODE_VECTOR = b'\x05\x00\xff\x1f'
 
 
-.PHONY: all clean
+.PHONY: all clean bootdisk
 
-all: $(TARGET)
+all: bootimg bootdisk
+
+bootimg: $(TARGET)
+bootdisk: $(DISK_TARGET)
 
 $(TARGET): $(VM_IO) $(MSDOS)
 	@echo "Creating boot image: $(TARGET) (size: $(IMG_SIZE_BYTES) bytes)..."
@@ -59,7 +66,18 @@ $(TARGET): $(VM_IO) $(MSDOS)
 
 	@echo "Boot image created successfully."
 
+# --- Boot Disk Creation based on idea.md ---
+$(DISK_TARGET): $(DISK_FILES)
+	@echo "Creating boot disk: $(DISK_TARGET)..."
+	# 1. Create a 1.44MB empty disk image.
+	dd if=/dev/zero of=$(DISK_TARGET) bs=1024 count=1440
+	# 2. Format with FAT12 as per idea.md's hint.
+	/sbin/mkfs.fat -S 4096 -F 12 $(DISK_TARGET)
+	# 3. Copy system files to the image's root directory.
+	mcopy -i $(DISK_TARGET) $(DISK_FILES) ::
+	@echo "Boot disk created successfully."
+
 clean:
 	@echo "Cleaning up..."
-	rm -f $(TARGET)
+	rm -f $(TARGET) $(DISK_TARGET)
 	@echo "Done."
