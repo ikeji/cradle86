@@ -66,7 +66,7 @@ $(TARGET_C_BIN): $(SRC_C) $(RESET_VEC_BIN)
 	@# Overwrite the beginning of the file with the compiled C program
 	@dd if=$(TARGET_C_BIN_TMP) of=$@ conv=notrunc >/dev/null 2>&1
 	@# Overwrite the end of the file with the reset vector (at 0xFFF0)
-	@dd if=$(RESET_VEC_BIN) of=$@ seek=65520 bs=1 conv=notrunc >/dev/null 2>&1
+	@dd if=$(RESET_VEC_BIN) of=$@ seek=131056 bs=1 conv=notrunc >/dev/null 2>&1
 	@echo "--- Created $@ ---"
 	@# Cleanup intermediate files
 	@rm -f $(SRC_C:.c=.o) $(TARGET_C_BIN_TMP)

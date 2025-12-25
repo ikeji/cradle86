@@ -22,11 +22,11 @@ ADDR_VECTOR = 536        # 0x86 * 4
 
 # Machine code sequences
 # JMP 1000H:0000H -> EA 00 00 00 10
-CODE_JMP = b'\xea\x00\x00\x00\x10'
+CODE_JMP = \xea\x00\x00\x00\x10
 # OUT 86H, AX; IRET -> E7 86; CF
-CODE_HANDLER = b'\xe7\x86\xcf'
+CODE_HANDLER = \xe7\x86\xcf
 # Interrupt vector for INT 86H pointing to 1FFF:0005 (0x1FFF5) -> 05 00 FF 1F
-CODE_VECTOR = b'\x05\x00\xff\x1f'
+CODE_VECTOR = \x05\x00\xff\x1f
 
 
 .PHONY: all clean bootdisk
@@ -54,15 +54,15 @@ $(TARGET): $(VM_IO) $(MSDOS)
 
 	# 4. Write the far jump instruction to the reset vector location.
 	@echo "  -> Writing JMP instruction at 0x$(shell printf '%X' $(ADDR_JMP))"
-	@echo -ne "$(CODE_JMP)" | dd of=$(TARGET) bs=1 seek=$(ADDR_JMP) conv=notrunc
+	@/usr/bin/printf '%b' "$(CODE_JMP)" | dd of=$(TARGET) bs=1 seek=$(ADDR_JMP) conv=notrunc
 
 	# 5. Write the interrupt handler (OUT + IRET).
 	@echo "  -> Writing INT 86h handler at 0x$(shell printf '%X' $(ADDR_HANDLER))"
-	@echo -ne "$(CODE_HANDLER)" | dd of=$(TARGET) bs=1 seek=$(ADDR_HANDLER) conv=notrunc
+	@/usr/bin/printf '%b' "$(CODE_HANDLER)" | dd of=$(TARGET) bs=1 seek=$(ADDR_HANDLER) conv=notrunc
 
 	# 6. Set the interrupt vector for INT 86h to point to the handler.
 	@echo "  -> Writing INT 86h vector at 0x$(shell printf '%X' $(ADDR_VECTOR))"
-	@echo -ne "$(CODE_VECTOR)" | dd of=$(TARGET) bs=1 seek=$(ADDR_VECTOR) conv=notrunc
+	@/usr/bin/printf '%b' "$(CODE_VECTOR)" | dd of=$(TARGET) bs=1 seek=$(ADDR_VECTOR) conv=notrunc
 
 	@echo "Boot image created successfully."
 
