@@ -830,11 +830,11 @@ function range(n) {
 
 define({name: "case",  // {{{
   fn: ()=> {
-    const 外形高 = 30
+    const 外形高 = 24
     const 外形寸法 = 110
     const 外形 = box(外形寸法,外形寸法,外形高).move(-外形寸法/2,-外形寸法/2,0).fillet(12.5, atZ);
     const 蓋寸法 = 101
-    const 蓋 = box(蓋寸法, 蓋寸法+100,3).move(-蓋寸法/2,-蓋寸法/2,外形高-6).fillet(10, atZ);
+    const 蓋 = box(蓋寸法, 蓋寸法+100,2).move(-蓋寸法/2,-蓋寸法/2,外形高-6).fillet(10, atZ);
     const 開口寸法 = 蓋寸法;
     const 開口 = box(開口寸法, 開口寸法+100, 6)
       .move(-開口寸法/2, -開口寸法/2, 外形高-6)
@@ -842,8 +842,29 @@ define({name: "case",  // {{{
       .chamfer(3, f=>f.inPlane("XY", 外形高))
     const 内側 = box(91,91,40).move(-91/2,-91/2,3)
     const USB = box(20, 1000, 20).move(-10+30,30,3+1+1.6+3)
-    const ノッチ = box(10, 5-0.5, 2).move(-5,蓋寸法/2,外形高-6)
-    return 外形.cut(蓋).cut(内側).cut(開口).cut(USB).union(ノッチ)
+    const トップノッチ = box(10, 5-0.5, 2).move(-5,蓋寸法/2,外形高-6)
+    const 基板台 =()=>cylinder(8, 2).move(0,0,3).cut(cylinder(2,2))
+    const 基板台群 = union([
+      基板台().move(-(90/2-5),-(90/2-5),0),
+      基板台().move( (90/2-5),-(90/2-5),0),
+      基板台().move( (90/2-5), (90/2-5),0),
+      基板台().move(-(90/2-5), (90/2-5),0),
+    ])
+    const 基板固定突起 = ()=>box(10, 1.5, 3)
+      .chamfer(1.49,inXY.and(inXZ))
+      .move(0,0,-3)
+      .chamfer(1.49,inXY.and(inXZ))
+      .move(0,0,3)
+      .move(-10/2,91/2-1.5,3+2+1)
+    const 基板固定突起2 = 基板固定突起().mirrorY()
+    return 外形.cut(蓋)
+      .cut(内側)
+      .cut(開口)
+      .union(基板台群)
+      .cut(USB)
+      .union(基板固定突起())
+      .union(基板固定突起2)
+      .union(トップノッチ)
   }
 })  // }}}
 
