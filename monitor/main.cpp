@@ -459,7 +459,7 @@ int io_init(unsigned addr, unsigned idx, unsigned cmd) {
 
 int io_disk(unsigned addr, unsigned idx, unsigned cmd) {
   if (idx){
-    memw2 (addr + IOBUF, 1);
+    memw2 (addr + IOBUF, 0);
     return 0;
   }
   uint32_t buf = memr4 (addr + IOBUF);
@@ -469,12 +469,12 @@ int io_disk(unsigned addr, unsigned idx, unsigned cmd) {
   {
     case 'R' << 8 | 'D':	/* Read */
       memcpy(ram+adr, disk_img+buf, siz);
-      memw2 (addr + IOBUF, 0);
+      memw2 (addr + IOBUF, 1);
       break;
     case 'W' << 8 | 'R':	/* Write */
-      memw2 (addr + IOBUF, 1);
+      memw2 (addr + IOBUF, 0);
     case 'C' << 8 | 'H':	/* Media change */
-      memw2 (addr + IOBUF, 1);
+      memw2 (addr + IOBUF, 0);
       break;
     default:
       return -1;
