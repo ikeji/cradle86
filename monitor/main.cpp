@@ -68,7 +68,7 @@ const FreqSetting freq_table[] = {{8000000, 4, 6.25f},  {4000000, 4, 12.5f},
                                   {1000000, 4, 50.0f},  {750000, 4, 66.67f},
                                   {500000, 4, 100.0f},  {250000, 99, 10.0f},
                                   {125000, 99, 20.0f},  {50000, 99, 50.0f},
-                                  {10000, 249, 100.0f}};
+                                  {10000, 249, 100.0f}, {1000, 999, 250.0f}};
 static uint32_t current_freq_hz = 125000;
 
 // --- XMODEM Constants ---
@@ -401,6 +401,14 @@ void core1_entry() {
 //   HIDOS VM
 // ==========================================
 
+extern const uint8_t _binary_disk_img_start[];
+extern const uint8_t _binary_disk_img_end[];
+extern const uint8_t _binary_disk_img_size[]; // GNU拡張
+
+const uint8_t *disk_img = _binary_disk_img_start;
+const size_t disk_img_size =
+    (size_t)(_binary_disk_img_end - _binary_disk_img_start);
+
 enum {
   IODEV = 0,
   IOIDX = 2,
@@ -435,7 +443,7 @@ int io_init(unsigned addr, unsigned idx, unsigned cmd) {
     return -1;
   switch (cmd) {
     case 'D' << 8 | 'I': // Disks
-      memw2(addr + IOBUF, 0); // No disks
+      memw2(addr + IOBUF, 1); // one disk
       break;
     case 'R' << 8 | 'A': // RAM size
       memw4(addr + IOBUF, RAM_SIZE - 0xF);
@@ -450,8 +458,27 @@ int io_init(unsigned addr, unsigned idx, unsigned cmd) {
 }
 
 int io_disk(unsigned addr, unsigned idx, unsigned cmd) {
-  // No disk support, indicate failure
-  memw2(addr + IOBUF, 0);
+  if (idx){
+    memw2 (addr + IOBUF, 1);
+    return 0;
+  }
+  uint32_t buf = memr4 (addr + IOBUF);
+  uint32_t siz = memr4 (addr + IOSIZ);
+  uint32_t adr = memr4 (addr + IOADR);
+  switch (cmd)
+  {
+    case 'R' << 8 | 'D':	/* Read */
+      memcpy(ram+adr, disk_img+buf, siz);
+      memw2 (addr + IOBUF, 0);
+      break;
+    case 'W' << 8 | 'R':	/* Write */
+      memw2 (addr + IOBUF, 1);
+    case 'C' << 8 | 'H':	/* Media change */
+      memw2 (addr + IOBUF, 1);
+      break;
+    default:
+      return -1;
+  }
   return 0; // Return 0, but IOBUF indicates failure for the VM
 }
 
@@ -531,6 +558,8 @@ void vmio(uint16_t in_data) {
   unsigned dev = memr2(addr + IODEV);
   unsigned idx = memr2(addr + IOIDX);
   unsigned cmd = memr2(addr + IOCMD);
+  printf("vmio call: in_data=%x dev=0x%04X idx=%x cmd=0x%04X\n", in_data, dev, idx,
+           cmd);
   int ret = -1;
 
   switch (dev) {
