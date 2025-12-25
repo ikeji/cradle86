@@ -69,7 +69,7 @@ const FreqSetting freq_table[] = {{8000000, 4, 6.25f},  {4000000, 4, 12.5f},
                                   {500000, 4, 100.0f},  {250000, 99, 10.0f},
                                   {125000, 99, 20.0f},  {50000, 99, 50.0f},
                                   {10000, 249, 100.0f}};
-static uint32_t current_freq_hz = 500000;
+static uint32_t current_freq_hz = 125000;
 
 // --- XMODEM Constants ---
 #define SOH 0x01
@@ -184,6 +184,9 @@ void setup_clock(uint32_t freq_hz) {
 #define CMD_RUN_NOLOG 2   // Run without logging.
 #define CMD_RUN_IOLOG 3   // Run with I/O logging only.
 #define CMD_RUN_COMLOG 4   // Run with COM2 port logging only.
+
+
+void vmio(uint16_t in_data);
 
 /**
  * @brief Core 1のエントリポイント。V30バスサイクルをエミュレートし、Core
@@ -330,6 +333,10 @@ void core1_entry() {
             ;
           uint16_t in_data = read_data();
 
+          if (is_io && addr == 0x86) {
+            vmio(in_data);
+          }
+
           if (!is_io) {
             bool bhe_low = !(pins & (1u << PIN_BHE));
             bool a0_low = !(addr & 1);
@@ -389,6 +396,171 @@ void core1_entry() {
     multicore_fifo_push_blocking(1); // Notify Core 0 of completion
   }
 }
+
+// ==========================================
+//   HIDOS VM
+// ==========================================
+
+enum {
+  IODEV = 0,
+  IOIDX = 2,
+  IOCMD = 4,
+  IOBUF = 6,
+  IOADR = 10,
+  IOSIZ = 14,
+};
+
+// Memory access helpers
+uint16_t memr2(uint32_t addr) {
+  return ram[map_address(addr)] | (ram[map_address(addr + 1)] << 8);
+}
+
+void memw2(uint32_t addr, uint16_t value) {
+  ram[map_address(addr)] = value & 0xFF;
+  ram[map_address(addr + 1)] = value >> 8;
+}
+
+uint32_t memr4(uint32_t addr) {
+  return memr2(addr) | (memr2(addr + 2) << 16);
+}
+
+void memw4(uint32_t addr, uint32_t value) {
+  memw2(addr, value & 0xFFFF);
+  memw2(addr + 2, value >> 16);
+}
+
+// I/O handlers from common.c, adapted for Pico
+int io_init(unsigned addr, unsigned idx, unsigned cmd) {
+  if (idx)
+    return -1;
+  switch (cmd) {
+    case 'D' << 8 | 'I': // Disks
+      memw2(addr + IOBUF, 0); // No disks
+      break;
+    case 'R' << 8 | 'A': // RAM size
+      memw4(addr + IOBUF, RAM_SIZE - 0xF);
+      break;
+    case 'D' << 8 | 'O':     // DOS address
+      memw2(addr + IOBUF, 0x18000 >> 4);   // Fixed position for MSDOS.SYS
+      break;
+    default:
+      return -1;
+  }
+  return 0;
+}
+
+int io_disk(unsigned addr, unsigned idx, unsigned cmd) {
+  // No disk support, indicate failure
+  memw2(addr + IOBUF, 0);
+  return 0; // Return 0, but IOBUF indicates failure for the VM
+}
+
+int io_con(unsigned addr, unsigned idx, unsigned cmd) {
+  if (idx)
+    return -1;
+  static unsigned count;
+  static uint16_t last;
+  switch (cmd) {
+  case 'W' << 8 | '1': // Write one byte
+    count = 0;
+    putchar(ram[map_address(addr + IOBUF)]);
+    fflush(stdout);
+    break;
+  case 'W' << 8 | 'R': // Write
+    count = 0;
+    {
+      uint32_t wr_addr = memr4(addr + IOADR);
+      uint32_t wr_len = memr4(addr + IOSIZ);
+      for (uint32_t i = 0; i < wr_len; i++) {
+        putchar(ram[map_address(wr_addr + i)]);
+      }
+      fflush(stdout);
+    }
+    break;
+  case 'R' << 8 | 'P': // Read poll
+  case 'R' << 8 | '1': // Read one byte
+    // ?????
+    last = 0;
+    memw2(addr + IOBUF, last);
+    break;
+  case 'R' << 8 | 'W': // Read wait (for lower CPU usage)
+    // ?????
+    break;
+  default:
+    return -1;
+  }
+  return 0;
+}
+
+int io_aux(unsigned addr, unsigned idx, unsigned cmd) {
+  if (idx)
+    return -1;
+  switch (cmd) {
+  case 'R' << 8 | 'P':       // Read poll
+    memw2(addr + IOBUF, 0); // No data
+    break;
+  default:
+    break; // Other ops are no-ops
+  }
+  return 0;
+}
+
+int io_clock(unsigned addr, unsigned idx, unsigned cmd) {
+  // Not implemented for now, as it requires RTC setup.
+  return -1;
+}
+
+int io_printer(unsigned addr, unsigned idx, unsigned cmd) {
+  if (idx)
+    return -1;
+  switch (cmd) {
+  case 'R' << 8 | 'P':       // Read poll
+    memw2(addr + IOBUF, 0); // Always busy/not present
+    break;
+  default:
+    break; // Other ops are no-ops
+  }
+  return 0;
+}
+
+void vmio(uint16_t in_data) {
+  // in_dataはパラグラフのアドレス。メモリアドレスにするために16倍する。
+  uint16_t paragraph = in_data;
+  uint32_t addr = in_data << 4;
+
+  unsigned dev = memr2(addr + IODEV);
+  unsigned idx = memr2(addr + IOIDX);
+  unsigned cmd = memr2(addr + IOCMD);
+  int ret = -1;
+
+  switch (dev) {
+  case 'I' << 8 | 'N':
+    ret = io_init(addr, idx, cmd);
+    break;
+  case 'D' << 8 | 'I':
+    ret = io_disk(addr, idx, cmd);
+    break;
+  case 'C' << 8 | 'O':
+    ret = io_con(addr, idx, cmd);
+    break;
+  case 'A' << 8 | 'U':
+    ret = io_aux(addr, idx, cmd);
+    break;
+  case 'C' << 8 | 'L':
+    ret = io_clock(addr, idx, cmd);
+    break;
+  case 'P' << 8 | 'R':
+    ret = io_printer(addr, idx, cmd);
+    break;
+  }
+
+  if (ret && ret != -2) {
+    printf("vmio error: ret=%d dev=0x%04X idx=%x cmd=0x%04X\n", ret, dev, idx,
+           cmd);
+  }
+}
+
+
 
 // ==========================================
 //   XMODEM Implementation (Simple)
