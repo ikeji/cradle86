@@ -48,7 +48,7 @@ $(TARGET): $(VM_IO) $(MSDOS)
 
 	# 3. Calculate the position for MSDOS.SYS and place it right after VM_IO.SYS.
 	@VMSIZE=$$((`stat -c %s $(VM_IO)`)); \
-	MSDOS_OFFSET=$$(( $(ADDR_VM_IO) + VMSIZE )); \
+	MSDOS_OFFSET=98304; \
 	echo "  -> Placing $(MSDOS) at address 0x$$(printf '%X' $$MSDOS_OFFSET)"; \
 	dd if=$(MSDOS) of=$(TARGET) bs=1 seek=$$MSDOS_OFFSET conv=notrunc
 
