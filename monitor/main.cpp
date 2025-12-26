@@ -474,7 +474,7 @@ int io_disk(unsigned addr, unsigned idx, unsigned cmd) {
     case 'W' << 8 | 'R':	/* Write */
       memw2 (addr + IOBUF, 0);
     case 'C' << 8 | 'H':	/* Media change */
-      memw2 (addr + IOBUF, 0);
+      memw2 (addr + IOBUF, 1);
       break;
     default:
       return -1;
@@ -533,8 +533,25 @@ int io_aux(unsigned addr, unsigned idx, unsigned cmd) {
 }
 
 int io_clock(unsigned addr, unsigned idx, unsigned cmd) {
-  // Not implemented for now, as it requires RTC setup.
-  return -1;
+  if (idx)
+    return -1;
+  uint32_t siz = memr4 (addr + IOSIZ);
+  uint32_t adr = memr4 (addr + IOADR);
+  if (siz != 12)
+    return -1;
+  switch (cmd)
+  {
+    case 'R' << 8 | 'D':	/* Read */
+      memw4 (adr + 8, 0);
+      memw4 (adr + 4, 0);
+      memw4 (adr + 0, 0);
+      break;
+    case 'W' << 8 | 'R':	/* Write */
+      break;
+    default:
+      return -1;
+  }
+  return 0;
 }
 
 int io_printer(unsigned addr, unsigned idx, unsigned cmd) {
@@ -558,8 +575,7 @@ void vmio(uint16_t in_data) {
   unsigned dev = memr2(addr + IODEV);
   unsigned idx = memr2(addr + IOIDX);
   unsigned cmd = memr2(addr + IOCMD);
-  printf("vmio call: in_data=%x dev=0x%04X idx=%x cmd=0x%04X\n", in_data, dev, idx,
-           cmd);
+  printf("vmio call: in_data=%x dev=0x%04X idx=%x cmd=0x%04X\n", in_data, dev, idx, cmd);
   int ret = -1;
 
   switch (dev) {
