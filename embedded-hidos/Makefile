@@ -23,8 +23,8 @@ ADDR_VECTOR = 536        # 0x86 * 4
 # Machine code sequences
 # JMP 1000H:0000H -> EA 00 00 00 10
 CODE_JMP = \xea\x00\x00\x00\x10
-# OUT 86H, AX; IRET -> E7 86; CF
-CODE_HANDLER = \xe7\x86\xcf
+# OUT 86H, AX; loop: IN 88H, AX; TEST AX,AX; JNZ loop; IRET
+CODE_HANDLER = \xe7\x86\xe5\x88\x85\xc0\x75\xfa\xcf
 # Interrupt vector for INT 86H pointing to 1FFF:0005 (0x1FFF5) -> 05 00 FF 1F
 CODE_VECTOR = \x05\x00\xff\x1f
 
@@ -70,7 +70,7 @@ $(TARGET): $(VM_IO) $(MSDOS)
 $(DISK_TARGET): $(DISK_FILES)
 	@echo "Creating boot disk: $(DISK_TARGET)..."
 	# 1. Create a 1.44MB empty disk image.
-	dd if=/dev/zero of=$(DISK_TARGET) bs=1024 count=1440
+	dd if=/dev/zero of=$(DISK_TARGET) bs=4096 count=256
 	# 2. Format with FAT12 as per idea.md's hint.
 	/sbin/mkfs.fat -S 4096 -F 12 $(DISK_TARGET)
 	# 3. Copy system files to the image's root directory.

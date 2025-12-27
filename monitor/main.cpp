@@ -185,9 +185,9 @@ void setup_clock(uint32_t freq_hz) {
 #define CMD_RUN_NOLOG 2   // Run without logging.
 #define CMD_RUN_IOLOG 3   // Run with I/O logging only.
 #define CMD_RUN_COMLOG 4   // Run with COM2 port logging only.
+#define CMD_RUN_HIDOSVM 5   // Run hidosvm.
 
-
-void vmio(uint16_t in_data);
+void hidosvm();
 
 /**
  * @brief Core 1のエントリポイント。V30バスサイクルをエミュレートし、Core
@@ -242,6 +242,10 @@ void core1_entry() {
     case CMD_RUN_COMLOG:
       logging_mode = COM_LOG;
       break;
+    case CMD_RUN_HIDOSVM:
+      hidosvm();
+      gpio_put(PIN_RESET, 1);
+      continue;
     default:
       // Unknown command, ensure loop terminates immediately.
       logging_mode = NO_LOG;
@@ -268,6 +272,7 @@ void core1_entry() {
         }
       }
       if (!ale_detected) {
+        printf("Bus operation timeout (no ale), halt cpu.\n");
         break; // Break from the bus sniffing loop if ALE is not detected within
                // timeout (V30 inactive)
       }
@@ -334,10 +339,6 @@ void core1_entry() {
             ;
           uint16_t in_data = read_data();
 
-          if (is_io && addr == 0x86) {
-            vmio(in_data);
-          }
-
           if (!is_io) {
             bool bhe_low = !(pins & (1u << PIN_BHE));
             bool a0_low = !(addr & 1);
@@ -402,6 +403,21 @@ void core1_entry() {
 //   HIDOS VM
 // ==========================================
 
+
+// Shared variable
+
+volatile uint8_t io_running = 0; // 1 for running.
+volatile uint16_t io_value = 0; // value for out86.
+
+// Non shared variable
+
+uint8_t hidos_loglevel = 9;
+// 0 FINE
+// 1 INFO
+// 2 ERROR
+
+// Images
+
 extern const uint8_t _binary_disk_img_start[];
 extern const uint8_t _binary_disk_img_end[];
 extern const uint8_t _binary_disk_img_size[]; // GNU拡張
@@ -423,7 +439,7 @@ enum {
 };
 
 // Memory access helpers
-uint16_t memr2(uint32_t addr) {
+uint32_t memr2(uint32_t addr) {
   return ram[map_address(addr)] | (ram[map_address(addr + 1)] << 8);
 }
 
@@ -472,8 +488,12 @@ int io_disk(unsigned addr, unsigned idx, unsigned cmd) {
   switch (cmd)
   {
     case 'R' << 8 | 'D':	/* Read */
+      if (hidos_loglevel < 1) {
+        printf("diskrw drive=%d wr=%d addr=%x off=%x len=%d\n", idx, 0, adr, buf, siz);
+      }
       memcpy(ram+adr, disk_img+buf, siz);
       memw2 (addr + IOBUF, 1);
+
       break;
     case 'W' << 8 | 'R':	/* Write */
       memw2 (addr + IOBUF, 0);
@@ -579,7 +599,9 @@ void vmio(uint16_t in_data) {
   unsigned dev = memr2(addr + IODEV);
   unsigned idx = memr2(addr + IOIDX);
   unsigned cmd = memr2(addr + IOCMD);
-  printf("vmio call: in_data=%x dev=0x%04X idx=%x cmd=0x%04X\n", in_data, dev, idx, cmd);
+  if (hidos_loglevel < 1) {
+    printf("HIDOS: pos=%x %c%c %d %c%c\n", addr, dev >> 8, dev &0xFF, idx, cmd >> 8, cmd&0xFF);
+  }
   int ret = -1;
 
   switch (dev) {
@@ -609,7 +631,121 @@ void vmio(uint16_t in_data) {
   }
 }
 
+// Run in core1.
+void hidosvm() {
+  while (true) {
+    absolute_time_t t_start_ale = get_absolute_time();
+    bool ale_detected = false;
+    while (absolute_time_diff_us(t_start_ale, get_absolute_time()) <
+        100000) { // ALE high timeout
+      if (sio_hw->gpio_in & (1 << PIN_ALE)) {
+        ale_detected = true;
+        break;
+      }
+    }
+    if (!ale_detected) {
+      printf("Bus operation timeout (no ale), halt cpu.\n");
+      break;
+    }
 
+    uint32_t addr = read_addr();
+    bool is_io = !(sio_hw->gpio_in & (1 << PIN_IOM));
+
+    // Wait for ALE to go low (no timeout requested here)
+    while (sio_hw->gpio_in & (1 << PIN_ALE))
+      ;
+
+    bool done_bus_cycle_op = false;
+    const uint32_t BUS_OPERATION_TIMEOUT_US =
+      100000; // 100ms timeout for RD/WR going low
+    absolute_time_t t_start_bus_operation = get_absolute_time();
+
+    while (!done_bus_cycle_op) {
+      if (absolute_time_diff_us(t_start_bus_operation, get_absolute_time()) >
+          BUS_OPERATION_TIMEOUT_US) {
+        printf("Bus operation timeout (no RD/WR detected low), breaking "
+            "cycle.\n");
+        break; // Break from this inner loop, which will then break the outer
+               // cycle loop
+      }
+      uint32_t pins = sio_hw->gpio_in;
+
+      if (!(pins & (1 << PIN_RD))) {
+        sleep_us(3); // これが無いとショートしてデバイスが落ちる。
+        set_ad_dir(true);
+        uint16_t out_data = 0xFFFF;
+        if (!is_io) {
+          uint32_t aligned_v30_addr = addr & ~1;
+          out_data = ram[map_address(aligned_v30_addr)] |
+            (ram[map_address(aligned_v30_addr + 1)] << 8);
+        } else if (is_io && addr == 0x88) {
+          out_data = io_running;
+        }
+        write_data(out_data);
+
+        // Wait for RD to go high (no timeout requested here)
+        while (!(sio_hw->gpio_in & (1 << PIN_RD)))
+          ;
+        set_ad_dir(false);
+        done_bus_cycle_op = true;
+      } else if (!(pins & (1 << PIN_WR))) {
+        // Wait for WR to go high (no timeout requested here)
+        while (!(sio_hw->gpio_in & (1 << PIN_WR)))
+          ;
+        uint16_t in_data = read_data();
+
+        if (!is_io) {
+          bool bhe_low = !(pins & (1u << PIN_BHE));
+          bool a0_low = !(addr & 1);
+
+          if (bhe_low && a0_low) { // Word Write to even address
+            ram[map_address(addr)] = in_data & 0xFF;
+            ram[map_address(addr + 1)] = in_data >> 8;
+          } else if (bhe_low && !a0_low) { // High Byte Write to odd address
+            ram[map_address(addr)] = in_data >> 8;
+          } else if (!bhe_low && a0_low) { // Low Byte Write to even address
+            ram[map_address(addr)] = in_data & 0xFF;
+          }
+          // For invalid case (BHE high, A0 high), nothing is written.
+        } else if (is_io && addr == 0x86) {
+          io_value = in_data;
+          __dmb();
+          io_running = 1;
+        }
+
+        done_bus_cycle_op = true;
+      }
+      // If ALE goes high during an active bus cycle (RD/WR phase), it
+      // indicates an issue or new cycle. This breaks out of the current bus
+      // operation to re-sync with the CPU.
+      if (sio_hw->gpio_in & (1 << PIN_ALE)) {
+        printf("ALE detected high unexpectedly during RD/WR wait, breaking "
+            "current bus operation.\n");
+        break; // Break from done_bus_cycle_op loop
+      }
+    }
+
+    if (!done_bus_cycle_op) {
+      // The inner bus operation loop was broken (e.g. by timeout),
+      // so we break the main bus sniffing loop.
+      break;
+    }
+  }
+}
+
+// Run in core0.
+void hidos_host(uint8_t loglevel) {
+  hidos_loglevel = loglevel;
+  while(true){
+    if (io_running == 0) continue;
+    __dmb();
+
+    vmio(io_value);
+
+    __dmb();
+    io_running = 0;
+  }
+}
 
 // ==========================================
 //   XMODEM Implementation (Simple)
@@ -1298,6 +1434,7 @@ int main() {
       printf(" autotest [io]  : Full auto test (Rx -> Run -> Tx Log)\n");
       printf(" b              : Reboot to BOOTSEL mode\n");
       printf(" k              : Load boot.img into RAM\n");
+      printf(" h              : Start hidos vm\n");
     } else if (strcmp(cmd, "k") == 0)
       cmd_load_boot(args);
     else if (strcmp(cmd, "d") == 0)
@@ -1593,6 +1730,12 @@ int main() {
       }
       printf("[AUTOTEST] Handler finished. Returning to main loop.\n");
       fflush(stdout);
+    } else if (strcmp(cmd, "h") == 0) {
+      int loglevel = (strlen(args) > 0) ? strtol(args, NULL, 10) : 9;
+      cmd_load_boot("");
+      printf("Start embedded HIDOS VM\n");
+      multicore_fifo_push_blocking(CMD_RUN_HIDOSVM);
+      hidos_host(loglevel);
     } else if (strcmp(cmd, "b") == 0) {
       reset_usb_boot(0, 0);
     } else
