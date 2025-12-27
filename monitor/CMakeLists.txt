@@ -34,10 +34,38 @@ set_source_files_properties(
     PROPERTIES GENERATED TRUE
 )
 
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/boot.img
+    COMMAND ${CMAKE_COMMAND} -E copy
+        ${CMAKE_CURRENT_SOURCE_DIR}/../embedded-hidos/boot.img
+        boot.img
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../embedded-hidos/boot.img
+)
+
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/boot_img.o
+    COMMAND arm-none-eabi-objcopy
+        -I binary
+        -O elf32-littlearm
+        -B arm
+        --rename-section .data=.rodata,alloc,load,readonly,data,contents
+        boot.img
+        boot_img.o
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/boot.img
+)
+
+set_source_files_properties(
+    ${CMAKE_CURRENT_BINARY_DIR}/boot_img.o
+    PROPERTIES GENERATED TRUE
+)
+
 add_executable(v30_control main.cpp)
 
 target_sources(v30_control PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/disk_img.o
+    ${CMAKE_CURRENT_BINARY_DIR}/boot_img.o
 )
 
 

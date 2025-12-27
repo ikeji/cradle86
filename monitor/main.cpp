@@ -9,6 +9,7 @@
 #include "hardware/structs/sio.h"
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
+#include "pico/bootrom.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -404,6 +405,9 @@ void core1_entry() {
 extern const uint8_t _binary_disk_img_start[];
 extern const uint8_t _binary_disk_img_end[];
 extern const uint8_t _binary_disk_img_size[]; // GNU拡張
+
+extern const uint8_t _binary_boot_img_start[];
+extern const uint8_t _binary_boot_img_end[];
 
 const uint8_t *disk_img = _binary_disk_img_start;
 const size_t disk_img_size =
@@ -886,6 +890,22 @@ bool xmodem_send(uint8_t *src, int len) {
 //   Monitor Commands
 // ==========================================
 /**
+ * @brief 'k'
+ * コマンドを処理します。リンクされた boot.img の内容をRAMの先頭にロードします。
+ * @param arg_str コマンドの引数文字列 (未使用)
+ * @return なし
+ */
+void cmd_load_boot(const char *arg_str) {
+    const size_t boot_img_size = (size_t)(_binary_boot_img_end - _binary_boot_img_start);
+    if (boot_img_size > RAM_SIZE) {
+        printf("Error: boot.img size (%u) is larger than RAM size (%u).\n", (unsigned int)boot_img_size, (unsigned int)RAM_SIZE);
+        return;
+    }
+    memcpy(ram, _binary_boot_img_start, boot_img_size);
+    printf("Loaded boot.img (%u bytes) into RAM at address 0x00000.\n", (unsigned int)boot_img_size);
+}
+
+/**
  * @brief 'd' (dump)
  * コマンドを処理します。指定されたアドレスからメモリの内容を16進数とASCIIで表示します。
  * @param arg_str コマンドの引数文字列 (アドレスと長さ)
@@ -1276,7 +1296,11 @@ int main() {
       printf(" xl             : XMODEM Send Log\n");
       printf(" v              : Version\n");
       printf(" autotest [io]  : Full auto test (Rx -> Run -> Tx Log)\n");
-    } else if (strcmp(cmd, "d") == 0)
+      printf(" b              : Reboot to BOOTSEL mode\n");
+      printf(" k              : Load boot.img into RAM\n");
+    } else if (strcmp(cmd, "k") == 0)
+      cmd_load_boot(args);
+    else if (strcmp(cmd, "d") == 0)
       cmd_dump(args);
     else if (strcmp(cmd, "e") == 0)
       cmd_edit(args);
@@ -1569,6 +1593,8 @@ int main() {
       }
       printf("[AUTOTEST] Handler finished. Returning to main loop.\n");
       fflush(stdout);
+    } else if (strcmp(cmd, "b") == 0) {
+      reset_usb_boot(0, 0);
     } else
       printf("Unknown command: %s\n", cmd);
   }
