@@ -586,17 +586,29 @@ int io_clock(unsigned addr, unsigned idx, unsigned cmd) {
   uint32_t adr = memr4 (addr + IOADR);
   if (siz != 12)
     return -1;
-  switch (cmd)
+  switch (cmd) {
+  case 'R' << 8 | 'D': /* Read */
   {
-    case 'R' << 8 | 'D':	/* Read */
-      memw4 (adr + 8, 0);
-      memw4 (adr + 4, 0);
-      memw4 (adr + 0, 0);
-      break;
-    case 'W' << 8 | 'R':	/* Write */
-      break;
-    default:
-      return -1;
+    // Get elapsed time since boot in microseconds
+    uint64_t elapsed_us = to_us_since_boot(get_absolute_time());
+
+    uint32_t elapsed_seconds = elapsed_us / 1000000;
+    uint32_t remaining_us = elapsed_us % 1000000;
+    
+    // 86400 seconds in a day
+    uint32_t elapsed_days = elapsed_seconds / 86400;
+    uint32_t seconds_of_day = elapsed_seconds % 86400;
+
+    // Base date is Jan 1, 1980 (3652 days since 1970-01-01)
+    memw4(adr + 8, remaining_us); // Microseconds (0-999999)
+    memw4(adr + 4, seconds_of_day); // Seconds of a day (0-86399)
+    memw4(adr + 0, 3652 + elapsed_days); // Days since 1970-01-01
+  }
+  break;
+  case 'W' << 8 | 'R': /* Write */
+    break;
+  default:
+    return -1;
   }
   return 0;
 }
