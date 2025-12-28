@@ -530,12 +530,35 @@ int io_con(unsigned addr, unsigned idx, unsigned cmd) {
     break;
   case 'R' << 8 | 'P': // Read poll
   case 'R' << 8 | '1': // Read one byte
-    // ?????
-    last = 0;
+    if (!last) {
+      int c = getchar_timeout_us(0); // non-blocking check
+      if (c != PICO_ERROR_TIMEOUT) {
+        last = (uint8_t)c | 0x100;
+      }
+    }
+    if (last) {
+      count = 0;
+    }
     memw2(addr + IOBUF, last);
+    if (cmd == ('R' << 8 | '1')) {
+      last = 0;
+    }
     break;
   case 'R' << 8 | 'W': // Read wait (for lower CPU usage)
-    // ?????
+    if (last) {
+      count = 0;
+    } else if (count < 16) {
+      count++;
+    } else {
+      // In common.c, this just polls. Here, we can't just poll without
+      // reading. So we read with a timeout and buffer the character if found.
+      // This should be functionally equivalent for the VM.
+      int c = getchar_timeout_us(10000); // 10ms timeout
+      if (c != PICO_ERROR_TIMEOUT) {
+        last = (uint8_t)c | 0x100; // Buffer the character
+        count = 0;                 // Reset wait counter
+      }
+    }
     break;
   default:
     return -1;
