@@ -138,11 +138,17 @@ flash: build/v30_control.uf2
 	@echo "--- Flash complete. ---"
 
 # This target builds the firmware if it is missing or if its sources have changed.
-build/v30_control.uf2: main.cpp CMakeLists.txt
+build/v30_control.uf2: main.cpp CMakeLists.txt ../embedded-hidos/boot.img ../embedded-hidos/disk.img
+	make -C ../embedded-hidos all
 	@echo "--- Firmware not found or source changed, building... ---"
 	mkdir -p build
 	cd build && cmake -DPICO_SDK_PATH=$(PICO_SDK_PATH) .. && make
 	@echo "--- Firmware build complete. ---"
+
+../embedded-hidos/boot.img:
+	make -C ../embedded-hidos boot.img
+../embedded-hidos/disk.img:
+	make -C ../embedded-hidos disk.img
 
 # --- Demo Target ---
 # Runs a sequence of monitor commands directly via serial port.

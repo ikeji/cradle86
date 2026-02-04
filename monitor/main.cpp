@@ -185,9 +185,9 @@ void setup_clock(uint32_t freq_hz) {
 #define CMD_RUN_NOLOG 2   // Run without logging.
 #define CMD_RUN_IOLOG 3   // Run with I/O logging only.
 #define CMD_RUN_COMLOG 4   // Run with COM2 port logging only.
-#define CMD_RUN_HIDOSVM 5   // Run hidosvm.
+#define CMD_RUN_HIDOSVM 5   // Run hidos.
 
-void hidosvm();
+void hidos_cpu();
 
 /**
  * @brief Core 1のエントリポイント。V30バスサイクルをエミュレートし、Core
@@ -219,10 +219,6 @@ void core1_entry() {
 
     absolute_time_t start_time = get_absolute_time(); // Start timing here
 
-    gpio_put(PIN_RESET, 1);
-    sleep_ms(1);
-    gpio_put(PIN_RESET, 0);
-
     int logged_cycles = 0;
     int bus_cycles = 0;
 
@@ -243,7 +239,7 @@ void core1_entry() {
       logging_mode = COM_LOG;
       break;
     case CMD_RUN_HIDOSVM:
-      hidosvm();
+      hidos_cpu();
       gpio_put(PIN_RESET, 1);
       continue;
     default:
@@ -252,6 +248,10 @@ void core1_entry() {
       bus_cycles = cycle_limit + 1; // force exit
       break;
     }
+
+    gpio_put(PIN_RESET, 1);
+    sleep_ms(1);
+    gpio_put(PIN_RESET, 0);
 
     while (true) {
       // --- Unified Termination Conditions ---
@@ -667,7 +667,11 @@ void vmio(uint16_t in_data) {
 }
 
 // Run in core1.
-void hidosvm() {
+void hidos_cpu() {
+  gpio_put(PIN_RESET, 1);
+  sleep_ms(1);
+  gpio_put(PIN_RESET, 0);
+
   while (true) {
     absolute_time_t t_start_ale = get_absolute_time();
     bool ale_detected = false;
@@ -1768,7 +1772,7 @@ int main() {
     } else if (strcmp(cmd, "h") == 0) {
       int loglevel = (strlen(args) > 0) ? strtol(args, NULL, 10) : 9;
       cmd_load_boot("");
-      printf("Start embedded HIDOS VM\n");
+      printf("Start embedded HIDOS machine\n");
       multicore_fifo_push_blocking(CMD_RUN_HIDOSVM);
       hidos_host(loglevel);
     } else if (strcmp(cmd, "b") == 0) {
