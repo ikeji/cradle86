@@ -5,9 +5,26 @@ TARGET = boot.img
 DISK_TARGET = disk.img
 
 # Source system files
-VM_IO = VM_IO.SYS
-MSDOS = MSDOS.SYS
-DISK_FILES = $(VM_IO) $(MSDOS) COMMAND.COM CHKDSK.COM DEBUG.COM
+VM_IO = ../HIDOS/BUILD/BIN/VM_IO.SYS
+MSDOS = ../HIDOS/BUILD/BIN/MSDOS.SYS
+DISK_FILES = ../HIDOS/BUILD/BIN/COMMAND.COM \
+						 ../HIDOS/BUILD/BIN/CHKDSK.COM \
+						 ../HIDOS/BUILD/BIN/DEBUG.COM \
+						 ../HIDOS/BUILD/BIN/DISKCOPY.COM \
+						 ../HIDOS/BUILD/BIN/EDLIN.COM \
+						 ../HIDOS/BUILD/BIN/EXE2BIN.EXE \
+						 ../HIDOS/BUILD/BIN/FC.EXE \
+						 ../HIDOS/BUILD/BIN/FIND.EXE \
+						 ../HIDOS/BUILD/BIN/FORMAT.COM \
+						 ../HIDOS/BUILD/BIN/HRDDRV.SYS \
+						 ../HIDOS/BUILD/BIN/MORE.COM \
+						 ../HIDOS/BUILD/BIN/PRINT.COM \
+						 ../HIDOS/BUILD/BIN/PROFIL.COM \
+						 ../HIDOS/BUILD/BIN/RECOVER.COM \
+						 ../HIDOS/BUILD/BIN/SORT.EXE \
+						 ../HIDOS/BUILD/BIN/SYS.COM \
+						 ../HIDOS/BUILD/MASM.EXE \
+						 ../HIDOS/BUILD/LINK.EXE
 
 # --- Configuration based on idea.md ---
 
@@ -76,6 +93,12 @@ $(DISK_TARGET): $(DISK_FILES)
 	# 3. Copy system files to the image's root directory.
 	mcopy -i $(DISK_TARGET) $(DISK_FILES) ::
 	@echo "Boot disk created successfully."
+
+$(VM_IO):
+	make -C ../HIDOS dos
+
+../HIDOS/BUILD/BIN/COMMAND.COM:
+	make -C ../HIDOS dos
 
 clean:
 	@echo "Cleaning up..."
