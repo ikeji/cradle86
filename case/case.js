@@ -830,16 +830,16 @@ function range(n) {
 
 define({name: "case",  // {{{
   fn: ()=> {
-    const 外形高 = 24
+    const 外形高 = 23
     const 外形寸法 = 110
     const 外形 = box(外形寸法,外形寸法,外形高).move(-外形寸法/2,-外形寸法/2,0).fillet(12.5, atZ);
     const 蓋寸法 = 101
     const 蓋 = box(蓋寸法, 蓋寸法+100,2).move(-蓋寸法/2,-蓋寸法/2,外形高-6).fillet(10, atZ);
     const 開口寸法 = 蓋寸法;
-    const 開口 = box(開口寸法, 開口寸法+100, 6)
-      .move(-開口寸法/2, -開口寸法/2, 外形高-6)
+    const 開口 = box(開口寸法, 開口寸法+100, 5)
+      .move(-開口寸法/2, -開口寸法/2, 外形高-5)
       .fillet(8, atZ)
-      .chamfer(3, f=>f.inPlane("XY", 外形高))
+      .chamfer(4, f=>f.inPlane("XY", 外形高))
     const 内側 = box(91,91,40).move(-91/2,-91/2,3)
     const USB = box(20, 1000, 20).move(-10+30,30,3+1+1.6+3)
     const トップノッチ = box(10, 5-0.5, 2).move(-5,蓋寸法/2,外形高-6)
@@ -850,21 +850,40 @@ define({name: "case",  // {{{
       基板台().move( (90/2-5), (90/2-5),0),
       基板台().move(-(90/2-5), (90/2-5),0),
     ])
-    const 基板固定突起 = ()=>box(10, 1.5, 3)
-      .chamfer(1.49,inXY.and(inXZ))
-      .move(0,0,-3)
-      .chamfer(1.49,inXY.and(inXZ))
-      .move(0,0,3)
-      .move(-10/2,91/2-1.5,3+2+1)
-    const 基板固定突起2 = 基板固定突起().mirrorY()
-    return 外形.cut(蓋)
+    const 基板固定突起部 = ()=>
+      box(2,10,10)
+      .move(45.5,-5,3)
+    const 突起長 = 6
+    const 基板固定突起 = ()=>
+      box(1,10,突起長)
+      .move(0,0,-突起長)
+      .asymmetricChamfer(atX.and(inXY), inXY,3,突起長-1)
+      .move(0,0,突起長)
+      .union(
+        box(1,4,2)
+        .chamfer(0.99, atY.and(inYZ))
+        .move(-1,3,6-3)
+      )
+      .move(45.5,-5,3)
+    return 外形
+      .cut(蓋)
       .cut(内側)
       .cut(開口)
       .union(基板台群)
       .cut(USB)
+      .cut(基板固定突起部())
       .union(基板固定突起())
-      .union(基板固定突起2)
+      .cut(基板固定突起部().mirrorX())
+      .union(基板固定突起().mirrorX())
       .union(トップノッチ)
+  }
+})  // }}}
+
+define({name: "pcb",  // {{{
+  // output: false,
+  fn: ()=> {
+    const 外形 = box(90,90,1.5).move(-45,-45,3+2);
+    return 外形
   }
 })  // }}}
 
