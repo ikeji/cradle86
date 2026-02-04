@@ -1,0 +1,3 @@
+[submodule "HIDOS"]
+	path = HIDOS
+	url = git@github.com:ikeji/HIDOS.git
