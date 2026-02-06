@@ -10,6 +10,7 @@
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
 #include "pico/bootrom.h"
+#include "pico/platform.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,7 +71,7 @@ const FreqSetting freq_table[] = {{8000000, 4, 6.25f},  {4000000, 4, 12.5f},
                                   {500000, 4, 100.0f},  {250000, 99, 10.0f},
                                   {125000, 99, 20.0f},  {50000, 99, 50.0f},
                                   {10000, 249, 100.0f}, {1000, 999, 250.0f}};
-static uint32_t current_freq_hz = 125000;
+static uint32_t current_freq_hz = 500000;
 
 // --- XMODEM Constants ---
 #define SOH 0x01
@@ -88,7 +89,7 @@ static uint32_t current_freq_hz = 125000;
  * @param output trueの場合は出力、falseの場合は入力に設定します。
  * @return なし
  */
-inline void set_ad_dir(bool output) {
+__force_inline void set_ad_dir(bool output) {
   uint32_t mask = (1 << 16) - 1; // Mask for GP0-15
   if (output)
     sio_hw->gpio_oe_set = mask;
@@ -101,7 +102,7 @@ inline void set_ad_dir(bool output) {
  * @param なし
  * @return 読み取った20ビットのアドレス
  */
-inline uint32_t read_addr() {
+__force_inline uint32_t read_addr() {
   uint32_t r = sio_hw->gpio_in;
   uint32_t addr = r & 0xFFFF;
   uint32_t high_addr_bits = (r >> PIN_A16) & 0b1111;
@@ -114,7 +115,7 @@ inline uint32_t read_addr() {
  * @param d 書き込む16ビットデータ
  * @return なし
  */
-inline void write_data(uint16_t d) {
+__force_inline void write_data(uint16_t d) {
   uint32_t old_out = sio_hw->gpio_out;
   sio_hw->gpio_out = (old_out & 0xFFFF0000) | d;
 }
@@ -124,7 +125,7 @@ inline void write_data(uint16_t d) {
  * @param なし
  * @return 読み取った16ビットデータ
  */
-inline uint16_t read_data() { return sio_hw->gpio_in & 0xFFFF; }
+__force_inline uint16_t read_data() { return sio_hw->gpio_in & 0xFFFF; }
 
 /**
  * @brief V30の20ビットアドレスを、Pico上の64KB
@@ -132,7 +133,7 @@ inline uint16_t read_data() { return sio_hw->gpio_in & 0xFFFF; }
  * @param v30_addr V30の物理アドレス
  * @return PicoのRAM内の対応するアドレス
  */
-inline uint32_t map_address(uint32_t v30_addr) {
+__force_inline uint32_t map_address(uint32_t v30_addr) {
   return v30_addr & (RAM_SIZE - 1);
 }
 
@@ -666,17 +667,24 @@ void vmio(uint16_t in_data) {
   }
 }
 
+const uint32_t TIMEOUT_CYCLES = 250000 * 200;
+
+__force_inline void tiny_delay() {
+  // wait 3us
+  for(volatile int i=0;i<10;i++)
+    __asm("nop");
+}
+
 // Run in core1.
-void hidos_cpu() {
+void __not_in_flash_func(hidos_cpu)() {
   gpio_put(PIN_RESET, 1);
   sleep_ms(1);
   gpio_put(PIN_RESET, 0);
 
   while (true) {
-    absolute_time_t t_start_ale = get_absolute_time();
     bool ale_detected = false;
-    while (absolute_time_diff_us(t_start_ale, get_absolute_time()) <
-        100000) { // ALE high timeout
+    uint32_t timeout_ctr = TIMEOUT_CYCLES;
+    while (timeout_ctr-->0) { // ALE high timeout
       if (sio_hw->gpio_in & (1 << PIN_ALE)) {
         ale_detected = true;
         break;
@@ -695,13 +703,10 @@ void hidos_cpu() {
       ;
 
     bool done_bus_cycle_op = false;
-    const uint32_t BUS_OPERATION_TIMEOUT_US =
-      100000; // 100ms timeout for RD/WR going low
-    absolute_time_t t_start_bus_operation = get_absolute_time();
+    timeout_ctr = TIMEOUT_CYCLES;
 
     while (!done_bus_cycle_op) {
-      if (absolute_time_diff_us(t_start_bus_operation, get_absolute_time()) >
-          BUS_OPERATION_TIMEOUT_US) {
+      if (--timeout_ctr == 0) {
         printf("Bus operation timeout (no RD/WR detected low), breaking "
             "cycle.\n");
         break; // Break from this inner loop, which will then break the outer
@@ -710,7 +715,7 @@ void hidos_cpu() {
       uint32_t pins = sio_hw->gpio_in;
 
       if (!(pins & (1 << PIN_RD))) {
-        sleep_us(3); // これが無いとショートしてデバイスが落ちる。
+        tiny_delay(); // これが無いとショートしてデバイスが落ちる。
         set_ad_dir(true);
         uint16_t out_data = 0xFFFF;
         if (!is_io) {
@@ -728,10 +733,11 @@ void hidos_cpu() {
         set_ad_dir(false);
         done_bus_cycle_op = true;
       } else if (!(pins & (1 << PIN_WR))) {
+        tiny_delay();
+        uint16_t in_data = read_data();
         // Wait for WR to go high (no timeout requested here)
         while (!(sio_hw->gpio_in & (1 << PIN_WR)))
           ;
-        uint16_t in_data = read_data();
 
         if (!is_io) {
           bool bhe_low = !(pins & (1u << PIN_BHE));
