@@ -20,20 +20,20 @@ start:
 ;  Padding up to the reset vector
 ; ==========================================
 ; Fill the space from the current address ($) up to just before
-; the reset vector (0xFFF0) with NOP (0x90) instructions.
+; the reset vector (0x1FFF0) with NOP (0x90) instructions.
 ; `$$` is the start of the section (0), so `$` is the current offset.
-times 0xFFF0 - ($ - $$) db 0x90
+times 0x1FFF0 - ($ - $$) db 0x90
 
 ; ==========================================
 ;  Reset Vector (at 0xFFF0)
 ; ==========================================
 ; The V30 CPU starts execution here (CS:IP = FFFF:0000) after a reset.
-; This location is mapped to 0xFFF0 in our 64KB RAM simulation.
+; This location is mapped to 0x1FFF0 in our 128KB RAM simulation.
 reset_vec:
     jmp 0x0000:0x0000  ; Jump to address 0 (where `start` is)
     ; The resulting machine code is: EA 00 00 00 00
 
 ; ==========================================
-;  Fill the rest of the file to make it exactly 64KB
+;  Fill the rest of the file to make it exactly 128KB
 ; ==========================================
-times 0x10000 - ($ - $$) db 0x90
+times 0x20000 - ($ - $$) db 0x90

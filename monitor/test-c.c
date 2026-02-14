@@ -56,9 +56,9 @@ void main() {
 
   out(c);
 
-  d = delay();
+  // d = delay();
 
-  outw(d);
+  // outw(d);
 
   hlt();
 }
