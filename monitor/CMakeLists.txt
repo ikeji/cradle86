@@ -61,7 +61,10 @@ set_source_files_properties(
     PROPERTIES GENERATED TRUE
 )
 
-add_executable(v30_control main.cpp)
+add_executable(v30_control main.cpp usb_ports.c usb_descriptors.c)
+
+# tusb_config.h
+target_include_directories(v30_control PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_sources(v30_control PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/disk_img.o
@@ -78,10 +81,12 @@ target_link_libraries(v30_control
     hardware_gpio
     hardware_clocks
     hardware_pwm # Added for PWM functionality
+    pico_unique_id
+    tinyusb_device # 4ポートCDC (usb_ports.c)
 )
 
-# USBシリアル有効、UART無効
-pico_enable_stdio_usb(v30_control 1)
+# USBはusb_ports.cが直接TinyUSBで扱う (pico_stdio_usbは1ポートのみのため不使用)
+pico_enable_stdio_usb(v30_control 0)
 pico_enable_stdio_uart(v30_control 0)
 
 pico_add_extra_outputs(v30_control)

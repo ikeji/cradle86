@@ -138,7 +138,7 @@ flash: build/v30_control.uf2
 	@echo "--- Flash complete. ---"
 
 # This target builds the firmware if it is missing or if its sources have changed.
-build/v30_control.uf2: main.cpp CMakeLists.txt ../embedded-hidos/boot.img ../embedded-hidos/disk.img
+build/v30_control.uf2: main.cpp usb_ports.c usb_ports.h usb_descriptors.c tusb_config.h CMakeLists.txt ../embedded-hidos/boot.img ../embedded-hidos/disk.img ../embedded-hidos/sanity.asm
 	make -C ../embedded-hidos all
 	@echo "--- Firmware not found or source changed, building... ---"
 	mkdir -p build
@@ -149,6 +149,23 @@ build/v30_control.uf2: main.cpp CMakeLists.txt ../embedded-hidos/boot.img ../emb
 	make -C ../embedded-hidos boot.img
 ../embedded-hidos/disk.img:
 	make -C ../embedded-hidos disk.img
+
+# --- HIDOS Virtual Disk Server ---
+# Serves DISK_IMG to the HIDOS VM as drive B: over USB port 3 (read/write).
+# It can be started or stopped while DOS runs (seen as a disk change).
+# The default b.img is created empty, with the same 4096-byte sectors as A:.
+# DISK_IMG can also be a directory: DOS sees it as a disk, and what DOS
+# writes goes back to the files (make disk-server DISK_IMG=~/dosfiles).
+DISK_IMG ?= b.img
+
+disk-server: $(DISK_IMG)
+	$(PYTHON) disk_server.py $(DISK_IMG)
+
+b.img:
+	dd if=/dev/zero of=$@ bs=4096 count=256
+	/sbin/mkfs.fat -S 4096 -F 12 $@
+
+.PHONY: disk-server
 
 # --- Demo Target ---
 # Runs a sequence of monitor commands directly via serial port.

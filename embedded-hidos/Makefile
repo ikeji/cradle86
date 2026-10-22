@@ -24,7 +24,8 @@ DISK_FILES = ../HIDOS/BUILD/BIN/COMMAND.COM \
 						 ../HIDOS/BUILD/BIN/SORT.EXE \
 						 ../HIDOS/BUILD/BIN/SYS.COM \
 						 ../HIDOS/BUILD/MASM.EXE \
-						 ../HIDOS/BUILD/LINK.EXE
+						 ../HIDOS/BUILD/LINK.EXE \
+						 SANITY.COM
 
 # --- Configuration based on idea.md ---
 
@@ -94,6 +95,10 @@ $(DISK_TARGET): $(DISK_FILES)
 	mcopy -i $(DISK_TARGET) $(DISK_FILES) ::
 	@echo "Boot disk created successfully."
 
+# cradle86 sanity check (run SANITY on the DOS console)
+SANITY.COM: sanity.asm
+	nasm -f bin -o $@ $<
+
 $(VM_IO):
 	make -C ../HIDOS dos
 
@@ -102,5 +107,5 @@ $(VM_IO):
 
 clean:
 	@echo "Cleaning up..."
-	rm -f $(TARGET) $(DISK_TARGET)
+	rm -f $(TARGET) $(DISK_TARGET) SANITY.COM
 	@echo "Done."
