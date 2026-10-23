@@ -31,6 +31,8 @@ Instead of power-cycling with BOOTSEL held, use the monitor command `b` to reboo
 
 HIDOS: `h` in the monitor, with a terminal on USB port 1 for the DOS console. For a read/write B: drive, run `make disk-server` (`disk_server.py`, needs pyserial; it creates an empty `b.img`). Use `DISK_IMG=<directory>` to serve a PC directory instead: the server builds a FAT12 image of it in memory and writes what DOS changes back to the files. Run `SANITY` in DOS to self-test the CPU, memory, clock, AUX, A: and B:. SANITY misses some timing faults: when tuning `c g`, also compare `SHA1SUM VI.EXE` with Linux `sha1sum`. `SANITY.COM` can be checked without hardware in `HIDOS/hidosvm`.
 
+`monitor/cradle.sh [image-or-dir]` opens all of this in one tmux session (`v30`). The DOS console runs picocom through `luit -encoding SJIS`, so `\` shows as `¥`. The monitor runs picocom, and the disk server runs `disk_server.py`. Each pane reconnects after a reboot or flash. `cradle.sh -k` stops it. When testing it, never run tmux commands against the user's default server: `$TMUX` overrides `TMUX_TMPDIR`. Use a separate `tmux -S <socket>` with `TMUX` unset, and don't call `kill-server` without `-S`.
+
 Test programs run on real hardware. The Pico must be on `/dev/ttyACM0`:
 ```
 make run            # nasm test.asm -> test.bin, upload via XMODEM, run, fetch full bus log
