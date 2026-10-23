@@ -25,7 +25,11 @@ DISK_FILES = ../HIDOS/BUILD/BIN/COMMAND.COM \
 						 ../HIDOS/BUILD/BIN/SYS.COM \
 						 ../HIDOS/BUILD/MASM.EXE \
 						 ../HIDOS/BUILD/LINK.EXE \
-						 SANITY.COM
+						 SANITY.COM \
+						 ../tiny-vi-clone/vi.exe \
+						 ../tiny-vi-clone/vi-quiet.exe \
+						 ../sha1sum/sha1sum.exe \
+						 ../sha1sum/crc32sum.exe
 
 # --- Configuration based on idea.md ---
 
@@ -92,12 +96,19 @@ $(DISK_TARGET): $(DISK_FILES)
 	# 2. Format with FAT12 as per idea.md's hint.
 	/sbin/mkfs.fat -S 4096 -F 12 $(DISK_TARGET)
 	# 3. Copy system files to the image's root directory.
-	mcopy -i $(DISK_TARGET) $(DISK_FILES) ::
+	#    Upper-case 8.3 names, so that mtools adds no long-name entries.
+	for f in $(DISK_FILES); do \
+		mcopy -i $(DISK_TARGET) $$f ::$$(basename $$f | tr a-z A-Z) || exit 1; \
+	done
 	@echo "Boot disk created successfully."
 
 # cradle86 sanity check (run SANITY on the DOS console)
 SANITY.COM: sanity.asm
 	nasm -f bin -o $@ $<
+
+# Prebuilt DOS tools from submodules (git submodule update --init)
+../tiny-vi-clone/%.exe ../sha1sum/%.exe:
+	git -C .. submodule update --init $(firstword $(subst /, ,$(patsubst ../%,%,$@)))
 
 $(VM_IO):
 	make -C ../HIDOS dos

@@ -11,7 +11,7 @@ Most docs and commit messages are in Japanese. Commit messages follow the `feat:
 ## Directory roles
 
 - `monitor/`: Pico firmware. It is built with the Pico SDK via CMake into `v30_control.uf2`. `main.cpp` holds the bus engines, the HIDOS VM I/O and the monitor. `usb_ports.c`, `usb_descriptors.c` and `tusb_config.h` implement the 4-port USB CDC. The directory also holds the host-side test tooling (`test_runner.py`, expect scripts, small V30 test programs). `project.md` has the pin map and the monitor command list. `memaccess.md` explains the bus read/write algorithm. `gpio_clock.md` records the GPIO clock engine's measured V30 timing limits, benchmarks and overclock notes.
-- `embedded-hidos/`: builds the two images that get embedded into the firmware. `boot.img` is the 128KB RAM image with VM_IO.SYS, MSDOS.SYS, the reset vector and the INT 86h trampoline. `disk.img` is a FAT12 disk with the DOS utilities and `SANITY.COM` (built from `sanity.asm`, a self-test to run on the DOS console). Its layout spec is in `idea.md`.
+- `embedded-hidos/`: builds the two images that get embedded into the firmware. `boot.img` is the 128KB RAM image with VM_IO.SYS, MSDOS.SYS, the reset vector and the INT 86h trampoline. `disk.img` is a FAT12 disk with the DOS utilities, the prebuilt `VI.EXE`/`VI-QUIET.EXE` and `SHA1SUM.EXE`/`CRC32SUM.EXE` from the `tiny-vi-clone/` and `sha1sum/` submodules (built with LSI C-86 in those repos, not here), and `SANITY.COM` (built from `sanity.asm`, a self-test to run on the DOS console). Its layout spec is in `idea.md`.
 - `HIDOS/`: git submodule (`git@github.com:ikeji/HIDOS.git`), an MS-DOS 2.11 build that is cross-compiled on Linux. `make -C HIDOS dos` produces `HIDOS/BUILD/BIN/*.SYS/*.COM`. `HIDOS/hidosvm/` is the reference PC-side VM; its `common.c` is the origin of the I/O handlers in `main.cpp`.
 - `mini-dos/`: an earlier, hand-written NASM mini DOS kernel (INT 21h stubs) for running COMMAND.COM. It can be run in QEMU. Superseded by the HIDOS path but still used as a test image (`make run-mini-dos*` in monitor).
 - `com1test/`: tiny NASM boot sector for testing serial output under QEMU/Bochs.
@@ -29,7 +29,7 @@ make flash                     # copies the uf2 to the mounted Pico (sudo mount;
 ```
 Instead of power-cycling with BOOTSEL held, use the monitor command `b` to reboot into BOOTSEL (or open the monitor port at 1200 baud).
 
-HIDOS: `h` in the monitor, with a terminal on USB port 1 for the DOS console. For a read/write B: drive, run `make disk-server` (`disk_server.py`, needs pyserial; it creates an empty `b.img`). Use `DISK_IMG=<directory>` to serve a PC directory instead: the server builds a FAT12 image of it in memory and writes what DOS changes back to the files. Run `SANITY` in DOS to self-test the CPU, memory, clock, AUX, A: and B:. `SANITY.COM` can be checked without hardware in `HIDOS/hidosvm`.
+HIDOS: `h` in the monitor, with a terminal on USB port 1 for the DOS console. For a read/write B: drive, run `make disk-server` (`disk_server.py`, needs pyserial; it creates an empty `b.img`). Use `DISK_IMG=<directory>` to serve a PC directory instead: the server builds a FAT12 image of it in memory and writes what DOS changes back to the files. Run `SANITY` in DOS to self-test the CPU, memory, clock, AUX, A: and B:. SANITY misses some timing faults: when tuning `c g`, also compare `SHA1SUM VI.EXE` with Linux `sha1sum`. `SANITY.COM` can be checked without hardware in `HIDOS/hidosvm`.
 
 Test programs run on real hardware. The Pico must be on `/dev/ttyACM0`:
 ```

@@ -92,7 +92,7 @@ volatile ClockMode clock_mode = CLOCK_GPIO;
 // The HIDOS engine (gpio_hidos.S) makes each phase just that long. The C
 // engine (logging modes) adds them to its own time, so it is slower.
 #define GPIO_DEFAULT_ADDR_NS 72
-#define GPIO_DEFAULT_LOW_NS 40
+#define GPIO_DEFAULT_LOW_NS 44
 #define GPIO_DEFAULT_HIGH_NS 40
 static uint32_t gpio_addr_ns = GPIO_DEFAULT_ADDR_NS;
 static uint32_t gpio_low_ns = GPIO_DEFAULT_LOW_NS;

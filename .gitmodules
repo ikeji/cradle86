@@ -1,3 +1,9 @@
 [submodule "HIDOS"]
 	path = HIDOS
 	url = git@github.com:ikeji/HIDOS.git
+[submodule "tiny-vi-clone"]
+	path = tiny-vi-clone
+	url = https://github.com/ikeji/tiny-vi-clone.git
+[submodule "sha1sum"]
+	path = sha1sum
+	url = https://github.com/ikeji/sha1sum.git
