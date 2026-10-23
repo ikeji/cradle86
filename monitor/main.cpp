@@ -21,7 +21,14 @@
 
 // --- Config ---
 #define VERSION_STR "0.0.1"
-#define RAM_SIZE 0x20000 // 128KB Virtual RAM
+// V30 memory map in HIDOS mode: RAM at 00000h-RAM_SIZE, a 16-byte ROM at
+// FFFF0h (reset JMP + INT 86h handler), nothing elsewhere.
+// The logging modes (test programs) instead mirror the first LOG_RAM_SIZE
+// bytes across the whole 1MB, and keep the bus log above it.
+#define RAM_SIZE 0x34000 // 208KB
+#define LOG_RAM_SIZE 0x20000
+#define ROM_OFF RAM_SIZE          // ram[] offset of the 16-byte ROM
+#define DUMMY_OFF (RAM_SIZE + 16) // ram[] offset where unmapped writes go
 #define MAX_CYCLES 4000 // Log buffer size
 
 // --- Pin Definitions ---
@@ -53,8 +60,17 @@ struct __attribute__((packed)) BusLog {
 };
 
 // --- Globals ---
-uint8_t ram[RAM_SIZE] __attribute__((aligned(4)));
-BusLog trace_log[MAX_CYCLES];
+uint8_t ram[RAM_SIZE + 32] __attribute__((aligned(4))); // + ROM + dummy
+// The logging modes never touch RAM above LOG_RAM_SIZE (they mirror), so the
+// bus log lives there. A HIDOS run overwrites it.
+BusLog *const trace_log = (BusLog *)(ram + LOG_RAM_SIZE);
+static_assert(MAX_CYCLES * sizeof(BusLog) <= RAM_SIZE - LOG_RAM_SIZE,
+              "trace_log must fit above LOG_RAM_SIZE");
+
+// ROM at FFFF0h: JMP 1000:0000 (VM_IO.SYS), then the INT 86h handler at
+// FFFF5h: OUT 86h,AX; poll: IN AX,88h; TEST AX,AX; JNZ poll; IRET.
+const uint8_t hidos_rom[16] = {0xEA, 0x00, 0x00, 0x00, 0x10, 0xE7, 0x86, 0xE5,
+                               0x88, 0x85, 0xC0, 0x75, 0xFA, 0xCF, 0xF4, 0xF4};
 
 volatile bool stop_request = false;
 
@@ -110,12 +126,13 @@ struct GpioAsmCtx {
   volatile bool *stop;
   volatile uint8_t *io_running;
   volatile uint16_t *io_value;
+  uint32_t ram_size;
   uint32_t t1_clocks;  // out: T1 + idle clocks
   uint32_t bus_cycles; // out
 };
 extern "C" int gpio_hidos_loop(GpioAsmCtx *ctx);
 // Sys clocks of each phase's own instructions ("W=" in gpio_hidos.S).
-const uint8_t gpio_asm_work[GA_PHASES] = {12, 7, 7, 6, 6, 7, 5, 7, 3, 8, 4, 7};
+const uint8_t gpio_asm_work[GA_PHASES] = {12, 7, 7, 5, 8, 7, 5, 7, 3, 8, 4, 7};
 GpioAsmCtx gpio_asm_ctx;
 
 // --- XMODEM Constants ---
@@ -179,7 +196,14 @@ __force_inline uint16_t read_data() { return sio_hw->gpio_in & 0xFFFF; }
  * @return PicoのRAM内の対応するアドレス
  */
 __force_inline uint32_t map_address(uint32_t v30_addr) {
-  return v30_addr & (RAM_SIZE - 1);
+  return v30_addr & (LOG_RAM_SIZE - 1);
+}
+
+// ram[] offset of a V30 address in the HIDOS memory map.
+__force_inline uint32_t v30_map(uint32_t v30_addr) {
+  if (v30_addr < RAM_SIZE)
+    return v30_addr;
+  return v30_addr >= 0xFFFF0 ? ROM_OFF + (v30_addr & 0xF) : DUMMY_OFF;
 }
 
 /**
@@ -508,6 +532,7 @@ void __not_in_flash_func(gpio_run_hidos)() {
   ctx.stop = &stop_request;
   ctx.io_running = &io_running;
   ctx.io_value = &io_value;
+  ctx.ram_size = RAM_SIZE;
   gpio_reset_cpu();
   uint64_t start = time_us_64();
   int exit_code = gpio_hidos_loop(&ctx);
@@ -743,8 +768,8 @@ void __not_in_flash_func(pwm_hidos_cpu)() {
         uint16_t out_data = 0xFFFF;
         if (!is_io) {
           uint32_t aligned_v30_addr = addr & ~1;
-          out_data = ram[map_address(aligned_v30_addr)] |
-            (ram[map_address(aligned_v30_addr + 1)] << 8);
+          out_data = ram[v30_map(aligned_v30_addr)] |
+            (ram[v30_map(aligned_v30_addr + 1)] << 8);
         } else if (is_io && addr == 0x88) {
           out_data = io_running;
         }
@@ -767,12 +792,12 @@ void __not_in_flash_func(pwm_hidos_cpu)() {
           bool a0_low = !(addr & 1);
 
           if (bhe_low && a0_low) { // Word Write to even address
-            ram[map_address(addr)] = in_data & 0xFF;
-            ram[map_address(addr + 1)] = in_data >> 8;
+            ram[v30_map(addr)] = in_data & 0xFF;
+            ram[v30_map(addr + 1)] = in_data >> 8;
           } else if (bhe_low && !a0_low) { // High Byte Write to odd address
-            ram[map_address(addr)] = in_data >> 8;
+            ram[v30_map(addr)] = in_data >> 8;
           } else if (!bhe_low && a0_low) { // Low Byte Write to even address
-            ram[map_address(addr)] = in_data & 0xFF;
+            ram[v30_map(addr)] = in_data & 0xFF;
           }
           // For invalid case (BHE high, A0 high), nothing is written.
         } else if (is_io && addr == 0x86) {
@@ -897,12 +922,12 @@ enum { VMIO_DONE = 0, VMIO_PENDING = 1, VMIO_ERROR = -1 };
 
 // Memory access helpers
 uint32_t memr2(uint32_t addr) {
-  return ram[map_address(addr)] | (ram[map_address(addr + 1)] << 8);
+  return ram[v30_map(addr)] | (ram[v30_map(addr + 1)] << 8);
 }
 
 void memw2(uint32_t addr, uint16_t value) {
-  ram[map_address(addr)] = value & 0xFF;
-  ram[map_address(addr + 1)] = value >> 8;
+  ram[v30_map(addr)] = value & 0xFF;
+  ram[v30_map(addr + 1)] = value >> 8;
 }
 
 uint32_t memr4(uint32_t addr) {
@@ -914,11 +939,13 @@ void memw4(uint32_t addr, uint32_t value) {
   memw2(addr + 2, value >> 16);
 }
 
-// Block copies between V30 memory (with address wrap-around) and a buffer.
+// Block copies between V30 memory (HIDOS map) and a buffer.
 void ram_read(uint32_t addr, uint8_t *dst, uint32_t len) {
   while (len > 0) {
-    uint32_t a = map_address(addr);
-    uint32_t n = RAM_SIZE - a < len ? RAM_SIZE - a : len;
+    uint32_t a = v30_map(addr);
+    uint32_t n = a < RAM_SIZE && RAM_SIZE - a < len ? RAM_SIZE - a
+                 : a < RAM_SIZE                    ? len
+                                                   : 1;
     memcpy(dst, ram + a, n);
     dst += n;
     addr += n;
@@ -928,8 +955,12 @@ void ram_read(uint32_t addr, uint8_t *dst, uint32_t len) {
 
 void ram_write(uint32_t addr, const uint8_t *src, uint32_t len) {
   while (len > 0) {
-    uint32_t a = map_address(addr);
-    uint32_t n = RAM_SIZE - a < len ? RAM_SIZE - a : len;
+    uint32_t a = v30_map(addr);
+    uint32_t n = a < RAM_SIZE && RAM_SIZE - a < len ? RAM_SIZE - a
+                 : a < RAM_SIZE                    ? len
+                                                   : 1;
+    if (a >= RAM_SIZE)
+      a = DUMMY_OFF; // no writes to the ROM
     memcpy(ram + a, src, n);
     src += n;
     addr += n;
@@ -1124,7 +1155,7 @@ int io_init(unsigned addr, unsigned idx, unsigned cmd) {
       memw2(addr + IOBUF, NUM_DRIVES);
       break;
     case 'R' << 8 | 'A': // RAM size
-      memw4(addr + IOBUF, RAM_SIZE - 0xF);
+      memw4(addr + IOBUF, RAM_SIZE);
       break;
     case 'D' << 8 | 'O':     // DOS address
       memw2(addr + IOBUF, 0x18000 >> 4);   // Fixed position for MSDOS.SYS
@@ -1224,7 +1255,7 @@ int io_char(CharDev &dev, unsigned addr, unsigned idx, unsigned cmd) {
     return VMIO_ERROR;
   switch (cmd) {
   case 'W' << 8 | '1': // Write one byte
-    port_write_all(dev.port, &ram[map_address(addr + IOBUF)], 1,
+    port_write_all(dev.port, &ram[v30_map(addr + IOBUF)], 1,
                    CHAR_TX_TIMEOUT_US);
     port_flush(dev.port);
     break;
@@ -1684,8 +1715,14 @@ void cmd_load_boot(const char *arg_str) {
         printf("Error: boot.img size (%u) is larger than RAM size (%u).\n", (unsigned int)boot_img_size, (unsigned int)RAM_SIZE);
         return;
     }
+    memset(ram, 0xF4, RAM_SIZE); // HLT
     memcpy(ram, _binary_boot_img_start, boot_img_size);
-    printf("Loaded boot.img (%u bytes) into RAM at address 0x00000.\n", (unsigned int)boot_img_size);
+    memcpy(ram + ROM_OFF, hidos_rom, sizeof(hidos_rom));
+    memset(ram + DUMMY_OFF, 0xFF, 16);
+    memcpy(ram + 0x86 * 4, "\x05\x00\xff\xff", 4); // INT 86h -> FFFF:0005
+    printf("Loaded boot.img (%u bytes) into RAM at address 0x00000, ROM at "
+           "FFFF0h.\n",
+           (unsigned int)boot_img_size);
 }
 
 /**
@@ -1706,11 +1743,11 @@ void cmd_dump(const char *arg_str) {
   for (int i = 0; i < len; i += 16) {
     printf("%05lX: ", addr + i);
     for (int j = 0; j < 16; j++)
-      printf(i + j < len ? "%02X " : "   ", ram[map_address(addr + i + j)]);
+      printf(i + j < len ? "%02X " : "   ", ram[v30_map(addr + i + j)]);
     printf("|");
     for (int j = 0; j < 16; j++)
-      putchar(i + j < len && isprint(ram[map_address(addr + i + j)])
-                  ? ram[map_address(addr + i + j)]
+      putchar(i + j < len && isprint(ram[v30_map(addr + i + j)])
+                  ? ram[v30_map(addr + i + j)]
                   : '.');
     printf("|\n");
   }
@@ -1734,7 +1771,7 @@ void cmd_edit(const char *arg_str) {
   uint32_t addr = strtol(addr_str, NULL, 16);
   char *val_str;
   while ((val_str = strtok(NULL, " ")) != NULL) {
-    ram[map_address(addr++)] = (uint8_t)strtol(val_str, NULL, 16);
+    ram[v30_map(addr++)] = (uint8_t)strtol(val_str, NULL, 16);
   }
   printf("Updated.\n");
 }
@@ -1807,47 +1844,47 @@ int assemble_instruction(uint32_t addr, const char *arg_str) {
   int bytes = 0;
 
   if (strcasecmp(mnemonic, "nop") == 0) {
-    ram[map_address(addr)] = 0x90;
+    ram[v30_map(addr)] = 0x90;
     bytes = 1;
   } else if (strcasecmp(mnemonic, "mov") == 0) {
     int reg1 = reg_to_code(op1_str);
     if (reg1 != -1 && op2_str) { // mov reg, imm
       int imm = strtol(op2_str, NULL, 16);
-      ram[map_address(addr)] = 0xB8 + reg1;
-      ram[map_address(addr + 1)] = imm & 0xFF;
-      ram[map_address(addr + 2)] = imm >> 8;
+      ram[v30_map(addr)] = 0xB8 + reg1;
+      ram[v30_map(addr + 1)] = imm & 0xFF;
+      ram[v30_map(addr + 2)] = imm >> 8;
       bytes = 3;
     } else if (op1_str[0] == '[' && op2_str &&
                reg_to_code(op2_str) == 0) { // mov [imm], ax
       int imm = strtol(op1_str + 1, NULL, 16);
-      ram[map_address(addr)] = 0xA3;
-      ram[map_address(addr + 1)] = imm & 0xFF;
-      ram[map_address(addr + 2)] = imm >> 8;
+      ram[v30_map(addr)] = 0xA3;
+      ram[v30_map(addr + 1)] = imm & 0xFF;
+      ram[v30_map(addr + 2)] = imm >> 8;
       bytes = 3;
     }
   } else if (strcasecmp(mnemonic, "add") == 0) {
     int reg1 = reg_to_code(op1_str);
     int reg2 = reg_to_code(op2_str);
     if (reg1 != -1 && reg2 != -1) {
-      ram[map_address(addr)] = 0x01;
-      ram[map_address(addr + 1)] = 0xC0 | (reg2 << 3) | reg1; // ModR/M
+      ram[v30_map(addr)] = 0x01;
+      ram[v30_map(addr + 1)] = 0xC0 | (reg2 << 3) | reg1; // ModR/M
       bytes = 2;
     }
   } else if (strcasecmp(mnemonic, "xchg") == 0) {
     int reg1 = reg_to_code(op1_str);
     int reg2 = reg_to_code(op2_str);
     if (reg1 == 0 && reg2 != -1) { // xchg ax, reg
-      ram[map_address(addr)] = 0x90 + reg2;
+      ram[v30_map(addr)] = 0x90 + reg2;
       bytes = 1;
     } else if (reg2 == 0 && reg1 != -1) { // xchg reg, ax
-      ram[map_address(addr)] = 0x90 + reg1;
+      ram[v30_map(addr)] = 0x90 + reg1;
       bytes = 1;
     }
   } else if (strcasecmp(mnemonic, "loop") == 0) {
     uint32_t target = strtol(op1_str, NULL, 16);
     int8_t offset = target - (addr + 2);
-    ram[map_address(addr)] = 0xE2;
-    ram[map_address(addr + 1)] = offset;
+    ram[v30_map(addr)] = 0xE2;
+    ram[v30_map(addr + 1)] = offset;
     bytes = 2;
   } else if (strcasecmp(mnemonic, "jmp") == 0) {
     char *target_str = op1_str;
@@ -1866,17 +1903,17 @@ int assemble_instruction(uint32_t addr, const char *arg_str) {
       uint16_t offset = (uint16_t)strtol(colon_pos + 1, NULL,
                                          16); // Offset part starts after colon
 
-      ram[map_address(addr)] = 0xEA; // JMP FAR opcode
-      ram[map_address(addr + 1)] = offset & 0xFF;
-      ram[map_address(addr + 2)] = (offset >> 8) & 0xFF;
-      ram[map_address(addr + 3)] = segment & 0xFF;
-      ram[map_address(addr + 4)] = (segment >> 8) & 0xFF;
+      ram[v30_map(addr)] = 0xEA; // JMP FAR opcode
+      ram[v30_map(addr + 1)] = offset & 0xFF;
+      ram[v30_map(addr + 2)] = (offset >> 8) & 0xFF;
+      ram[v30_map(addr + 3)] = segment & 0xFF;
+      ram[v30_map(addr + 4)] = (segment >> 8) & 0xFF;
       bytes = 5;
     } else { // Near jump: relative to current IP
       uint32_t target = strtol(target_str, NULL, 16);
       int8_t offset = target - (addr + 2); // EB opcode is 2 bytes
-      ram[map_address(addr)] = 0xEB;       // JMP NEAR rel8 opcode
-      ram[map_address(addr + 1)] = offset;
+      ram[v30_map(addr)] = 0xEB;       // JMP NEAR rel8 opcode
+      ram[v30_map(addr + 1)] = offset;
       bytes = 2;
     }
   }
@@ -1885,20 +1922,20 @@ int assemble_instruction(uint32_t addr, const char *arg_str) {
     // The issue is that op1_str and op2_str are tokenized before this handler.
     // We need to process them and then continue tokenizing.
     if (op1_str) {
-      ram[map_address(addr + bytes)] = (uint8_t)strtol(op1_str, NULL, 16);
+      ram[v30_map(addr + bytes)] = (uint8_t)strtol(op1_str, NULL, 16);
       bytes++;
     } else {
       return 0; // No arguments for db.
     }
 
     if (op2_str) {
-      ram[map_address(addr + bytes)] = (uint8_t)strtol(op2_str, NULL, 16);
+      ram[v30_map(addr + bytes)] = (uint8_t)strtol(op2_str, NULL, 16);
       bytes++;
     }
 
     char *next_op_str;
     while ((next_op_str = strtok(NULL, " ,")) != NULL) {
-      ram[map_address(addr + bytes)] = (uint8_t)strtol(next_op_str, NULL, 16);
+      ram[v30_map(addr + bytes)] = (uint8_t)strtol(next_op_str, NULL, 16);
       bytes++;
     }
   }
@@ -1906,7 +1943,7 @@ int assemble_instruction(uint32_t addr, const char *arg_str) {
   if (bytes > 0) {
     printf(" ->");
     for (int i = 0; i < bytes; i++)
-      printf(" %02X", ram[map_address(addr + i)]);
+      printf(" %02X", ram[v30_map(addr + i)]);
     return bytes;
   } else {
     return 0;
@@ -1931,7 +1968,7 @@ void cmd_disasm(const char *arg_str) {
   uint32_t pc = addr;
   while (pc < addr + len) {
     uint32_t current_pc = pc;
-    uint8_t opcode = ram[map_address(pc)];
+    uint8_t opcode = ram[v30_map(pc)];
     int bytes = 1;
     char disasm_str[128] = {0};
     char hex_dump[32] = {0};
@@ -1940,29 +1977,29 @@ void cmd_disasm(const char *arg_str) {
       sprintf(disasm_str, "nop");
     } else if (opcode >= 0xB0 && opcode <= 0xB7) {
       bytes = 2;
-      uint8_t imm = ram[map_address(pc + 1)];
+      uint8_t imm = ram[v30_map(pc + 1)];
       sprintf(disasm_str, "mov %s, 0x%02X", reg_names8[opcode - 0xB0], imm);
     } else if (opcode >= 0xB8 && opcode <= 0xBF) {
       bytes = 3;
-      uint16_t imm = ram[map_address(pc + 1)] | (ram[map_address(pc + 2)] << 8);
+      uint16_t imm = ram[v30_map(pc + 1)] | (ram[v30_map(pc + 2)] << 8);
       sprintf(disasm_str, "mov %s, 0x%04X", code_to_reg(opcode - 0xB8), imm);
     } else if (opcode == 0x04) {
       bytes = 2;
-      uint8_t imm = ram[map_address(pc + 1)];
+      uint8_t imm = ram[v30_map(pc + 1)];
       sprintf(disasm_str, "add al, 0x%02X", imm);
     } else if (opcode == 0xA2) {
       bytes = 3;
       uint16_t mem_addr =
-          ram[map_address(pc + 1)] | (ram[map_address(pc + 2)] << 8);
+          ram[v30_map(pc + 1)] | (ram[v30_map(pc + 2)] << 8);
       sprintf(disasm_str, "mov [0x%04X], al", mem_addr);
     } else if (opcode == 0xA3) {
       bytes = 3;
       uint16_t mem_addr =
-          ram[map_address(pc + 1)] | (ram[map_address(pc + 2)] << 8);
+          ram[v30_map(pc + 1)] | (ram[v30_map(pc + 2)] << 8);
       sprintf(disasm_str, "mov [0x%04X], ax", mem_addr);
     } else if (opcode == 0x01) {
       bytes = 2;
-      uint8_t modrm = ram[map_address(pc + 1)];
+      uint8_t modrm = ram[v30_map(pc + 1)];
       if ((modrm >> 6) == 3) { // reg, reg
         int reg1 = modrm & 7;
         int reg2 = (modrm >> 3) & 7;
@@ -1973,18 +2010,18 @@ void cmd_disasm(const char *arg_str) {
       sprintf(disasm_str, "xchg ax, %s", code_to_reg(opcode - 0x90));
     } else if (opcode == 0xE2) {
       bytes = 2;
-      int8_t offset = ram[map_address(pc + 1)];
+      int8_t offset = ram[v30_map(pc + 1)];
       sprintf(disasm_str, "loop 0x%04lX", pc + 2 + offset);
     } else if (opcode == 0xEB) {
       bytes = 2;
-      int8_t offset = ram[map_address(pc + 1)];
+      int8_t offset = ram[v30_map(pc + 1)];
       sprintf(disasm_str, "jmp 0x%04lX", pc + 2 + offset);
     } else if (opcode == 0xEA) { // JMP FAR segment:offset
       bytes = 5;
       uint16_t offset =
-          ram[map_address(pc + 1)] | (ram[map_address(pc + 2)] << 8);
+          ram[v30_map(pc + 1)] | (ram[v30_map(pc + 2)] << 8);
       uint16_t segment =
-          ram[map_address(pc + 3)] | (ram[map_address(pc + 4)] << 8);
+          ram[v30_map(pc + 3)] | (ram[v30_map(pc + 4)] << 8);
       sprintf(disasm_str, "jmp far 0x%04X:0x%04X", segment, offset);
     } else if (opcode == 0xF4) {
       bytes = 1;
@@ -1995,7 +2032,7 @@ void cmd_disasm(const char *arg_str) {
 
     char *p = hex_dump;
     for (int i = 0; i < bytes; i++)
-      p += sprintf(p, "%02X ", ram[map_address(current_pc + i)]);
+      p += sprintf(p, "%02X ", ram[v30_map(current_pc + i)]);
 
     printf("%05lX: %-12s %s\n", current_pc, hex_dump, disasm_str);
     pc += bytes;
@@ -2367,13 +2404,13 @@ int main() {
         }
       }
     } else if (strcmp(cmd, "xr") == 0) {
-      if (xmodem_receive(ram, RAM_SIZE)) {
+      if (xmodem_receive(ram, LOG_RAM_SIZE)) {
         printf("XMODEM receive completed successfully.\n");
       } else {
         printf("XMODEM receive failed.\n");
       }
     } else if (strcmp(cmd, "xs") == 0) {
-      if (xmodem_send(ram, RAM_SIZE)) {
+      if (xmodem_send(ram, LOG_RAM_SIZE)) {
         printf("XMODEM send completed successfully.\n");
       } else {
         printf("XMODEM send failed.\n");
@@ -2418,7 +2455,7 @@ int main() {
 
       printf("[AUTOTEST] Receiving test binary...\n");
       fflush(stdout);
-      if (xmodem_receive(ram, RAM_SIZE)) {
+      if (xmodem_receive(ram, LOG_RAM_SIZE)) {
         printf("[AUTOTEST] Receive success. Running test...\n");
         fflush(stdout);
         memset(trace_log, 0, sizeof(trace_log));

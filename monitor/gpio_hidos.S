@@ -19,7 +19,12 @@
 //   r3 &ram[addr & 0x1FFFE]           r4 data      r5 ram base
 //   r6 scratch/spin  r7 0xFFFF (AD0-15 mask)
 //   r8 T1/Ti clocks  r9 bus cycles    r10 &stop_request
-//   r11 &io_running  r12 &io_value
+//   r11 &io_running  r12 &io_value    lr RAM size
+//
+// Memory map: ram[addr] below RAM size; FFFF0h-FFFFFh reads the ROM copy
+// that main.cpp keeps right after the RAM (ram[RAM size + 0..15]); other
+// addresses read 0FFFFh, and their writes (and writes to the ROM) go to a
+// dummy word after it.
 
     .syntax unified
     .cpu cortex-m0plus
@@ -82,11 +87,12 @@ gpio_hidos_loop:
     stmia r1!, {r2-r7}
     ldmia r0!, {r2-r7}
     stmia r1!, {r2-r7}
-    // ram, stop, io_running, io_value
-    ldmia r0!, {r2-r5}
+    // ram, stop, io_running, io_value, ram_size
+    ldmia r0!, {r2-r6}
     mov r10, r3
     mov r11, r4
     mov r12, r5
+    mov lr, r6
     movs r5, r2
     movs r0, #0
     mov r8, r0
@@ -106,7 +112,7 @@ t1:
     mov r6, r10
     ldrb r6, [r6]
     cmp r6, #0
-    bne exit_stop
+    bne 9f
     nop                         // 60ns = 15 clocks at 250MHz with one spin
     SPIN S_T1L
     ldr r2, [r0, #SIO_IN]
@@ -118,17 +124,18 @@ t1:
     lsrs r3, r3, #1
     lsls r3, r3, #1
     SPIN S_T1H
-// ---- T2 low: W=6. RD/WR go low; r3 = (addr & 0x1FFFE).
+// ---- T2 low: W=5. RD/WR go low; r3 = addr & ~1.
     str r1, [r0, #SIO_CLR]
-    lsrs r4, r2, #26            // A16 (GP26) -> bit 0
-    lsls r4, r4, #31
-    lsrs r4, r4, #15            // -> bit 16 (128KB mirror)
+    lsrs r4, r2, #26            // A16-A19 (GP26-29) -> bits 0-3
+    lsls r4, r4, #16
     adds r3, r4
     SPIN S_T2L
-// ---- T2 high: W=6. Fetch the read data.
+// ---- T2 high: W=8. Fetch the read data.
     str r1, [r0, #SIO_SET]
     lsls r6, r2, #12            // IO/M# -> N, clear = I/O
     bpl t2h_io
+    cmp r3, lr
+    bhs t2h_ext
     ldrh r4, [r5, r3]
 t2h_spin:
     SPIN S_T2H
@@ -161,6 +168,7 @@ t4:
 idle:
     SPIN S_IDLEH
     b t1
+9:  b exit_stop                 // (in reach of the T1 low check)
 
 // ---- T2 high, I/O read: IN 88h returns io_running, others 0FFFFh.
 t2h_io:
@@ -171,6 +179,22 @@ t2h_io:
     ldrb r4, [r4]
     b t2h_spin
 2:  movs r4, r7
+    b t2h_spin
+
+// ---- T2 high, memory above the RAM: ROM or nothing. Point r3 at the dummy
+// word so that a write is dropped.
+t2h_ext:
+    lsrs r6, r3, #4
+    cmp r6, r7                  // FFFFxh?
+    bne 1f
+    movs r6, #0xE
+    ands r6, r3
+    add r6, lr                  // ROM copy right after the RAM
+    ldrh r4, [r5, r6]
+    b 2f
+1:  movs r4, r7
+2:  mov r3, lr
+    adds r3, #16
     b t2h_spin
 
 // ---- T3 low, not a read: write or HLT. r6 = pins << 14, so C = WR#.
@@ -235,8 +259,8 @@ exit:
     ldr r1, [sp, #S_CTX]
     mov r2, r8
     mov r3, r9
-    str r2, [r1, #(N_LOOPS + 4) * 4]  // t1_clocks
-    str r3, [r1, #(N_LOOPS + 5) * 4]  // bus_cycles
+    str r2, [r1, #(N_LOOPS + 5) * 4]  // t1_clocks
+    str r3, [r1, #(N_LOOPS + 6) * 4]  // bus_cycles
     add sp, #(N_LOOPS * 4)
     pop {r1, r4}
     mov r12, r4
