@@ -91,6 +91,9 @@ static void mon_out_flush(void) {
 static int mon_in_chars(char *buf, int len) {
   if (get_core_num() != 0)
     return PICO_ERROR_NO_DATA;
+  // Waiting for input: push out the prompt/echo still in the TX FIFO (TinyUSB
+  // only sends on its own once a full packet has accumulated).
+  tud_cdc_n_write_flush(PORT_MON);
   usb_background();
   int n = (int)tud_cdc_n_read(PORT_MON, buf, (uint32_t)len);
   return n > 0 ? n : PICO_ERROR_NO_DATA;
