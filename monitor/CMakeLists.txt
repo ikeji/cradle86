@@ -61,7 +61,7 @@ set_source_files_properties(
     PROPERTIES GENERATED TRUE
 )
 
-add_executable(v30_control main.cpp usb_ports.c usb_descriptors.c)
+add_executable(v30_control main.cpp gpio_hidos.S usb_ports.c usb_descriptors.c)
 
 # Overclocking (c s <MHz>) needs a slower flash clock: sys clock / 4.
 pico_define_boot_stage2(v30_boot2 ${PICO_DEFAULT_BOOT_STAGE2_FILE})

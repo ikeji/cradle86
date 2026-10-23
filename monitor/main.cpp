@@ -85,18 +85,38 @@ static uint32_t current_freq_hz = 500000;
 // CLOCK_PWM: free-running PWM clock at current_freq_hz, core 1 polls the bus.
 enum ClockMode { CLOCK_PWM, CLOCK_GPIO };
 volatile ClockMode clock_mode = CLOCK_GPIO;
-// GPIO clock delays (see gpio_bus_run), added to the engine's own time:
+// GPIO clock minimum widths (see gpio_bus_run):
 //   addr: CLK low before sampling ALE/address in T1 (V30 output delay)
-//   low : T2 CLK low
-//   high: T2/T3 CLK high (also the read data setup time before T4)
+//   low : CLK low of T2-T4
+//   high: CLK high (also the read data setup time before T4)
+// The HIDOS engine (gpio_hidos.S) makes each phase just that long. The C
+// engine (logging modes) adds them to its own time, so it is slower.
 #define GPIO_DEFAULT_ADDR_NS 72
-#define GPIO_DEFAULT_LOW_NS 24
-#define GPIO_DEFAULT_HIGH_NS 36
+#define GPIO_DEFAULT_LOW_NS 40
+#define GPIO_DEFAULT_HIGH_NS 40
 static uint32_t gpio_addr_ns = GPIO_DEFAULT_ADDR_NS;
 static uint32_t gpio_low_ns = GPIO_DEFAULT_LOW_NS;
 static uint32_t gpio_high_ns = GPIO_DEFAULT_HIGH_NS;
 // The same in spin() loops (3 sys clocks each).
 volatile uint32_t gpio_addr_loops, gpio_low_loops, gpio_high_loops;
+
+// gpio_hidos_loop() (gpio_hidos.S) state. Keep in sync with the .S file.
+enum GpioAsmPhase { GA_T1L, GA_T1H, GA_IDLEH, GA_T2L, GA_T2H, GA_T3L,
+                    GA_T3H_RD, GA_T3H_WR, GA_T4L, GA_T4L_WR, GA_T4H,
+                    GA_T4H_WR, GA_PHASES };
+struct GpioAsmCtx {
+  uint32_t loops[GA_PHASES]; // spin count per phase
+  uint8_t *ram;
+  volatile bool *stop;
+  volatile uint8_t *io_running;
+  volatile uint16_t *io_value;
+  uint32_t t1_clocks;  // out: T1 + idle clocks
+  uint32_t bus_cycles; // out
+};
+extern "C" int gpio_hidos_loop(GpioAsmCtx *ctx);
+// Sys clocks of each phase's own instructions ("W=" in gpio_hidos.S).
+const uint8_t gpio_asm_work[GA_PHASES] = {12, 7, 7, 6, 6, 7, 5, 7, 3, 8, 4, 7};
+GpioAsmCtx gpio_asm_ctx;
 
 // --- XMODEM Constants ---
 #define SOH 0x01
@@ -230,13 +250,23 @@ void setup_gpio_clock(uint32_t addr_ns, uint32_t low_ns, uint32_t high_ns) {
   gpio_addr_loops = loops(addr_ns);
   gpio_low_loops = loops(low_ns);
   gpio_high_loops = loops(high_ns);
+
+  for (int i = 0; i < GA_PHASES; i++) {
+    uint32_t ns = i == GA_T1L ? addr_ns
+                  : (i == GA_T2L || i == GA_T3L || i == GA_T4L ||
+                     i == GA_T4L_WR)
+                      ? low_ns
+                      : high_ns;
+    int32_t rest = (int32_t)(ns * sys_mhz / 1000) - gpio_asm_work[i];
+    gpio_asm_ctx.loops[i] = rest > 3 ? (rest + 2) / 3 : 1;
+  }
   clock_mode = CLOCK_GPIO;
 }
 
 void print_clock_status() {
   if (clock_mode == CLOCK_GPIO) {
     printf("Clock: GPIO, addr %lu ns, low %lu ns, high %lu ns (+ engine "
-           "time), Pico %lu MHz\n",
+           "time in log modes), Pico %lu MHz\n",
            gpio_addr_ns, gpio_low_ns, gpio_high_ns,
            clock_get_hz(clk_sys) / 1000000);
   } else {
@@ -316,8 +346,8 @@ __force_inline bool should_log(int mode, bool is_io, uint32_t addr) {
 // gpio_high_loops, on top of the instructions in that phase.
 // READY is tied high, so T3 and T4 always follow T2 without wait states.
 //
-// Limits found on the board with SANITY (addr/low/high ns, avg V30 clock):
-//   Pico 250MHz: 60/12/24 -> 6.3MHz.  Pico 400MHz: 60/36/30 -> 7.1MHz.
+// HIDOS mode uses the faster hand-written copy in gpio_hidos.S instead; the
+// minimum widths found with it (V30 limits) are in gpio_clock.md.
 
 #define GPIO_IDLE_LIMIT (1u << 22) // clocks without ALE before giving up
 
@@ -326,6 +356,20 @@ __force_inline bool should_log(int mode, bool is_io, uint32_t addr) {
 __force_inline void spin(uint32_t n) {
   if (n)
     asm volatile("1: sub %0, #1\n bne 1b" : "+l"(n) : : "cc", "memory");
+}
+
+__force_inline void gpio_reset_cpu() {
+  const uint32_t clk = 1u << PIN_CLK_OUT;
+  // Reset needs at least 4 clocks while RESET is high.
+  sio_hw->gpio_set = 1u << PIN_RESET;
+  for (int i = 0; i < 16; i++) {
+    sio_hw->gpio_clr = clk;
+    spin(gpio_addr_loops + 20);
+    sio_hw->gpio_set = clk;
+    spin(gpio_high_loops + 20);
+  }
+  // From here on gpio_out is only ever CLK or data: RESET stays low.
+  sio_hw->gpio_clr = 1u << PIN_RESET;
 }
 
 __force_inline void gpio_bus_run(const int mode) {
@@ -339,16 +383,7 @@ __force_inline void gpio_bus_run(const int mode) {
   int bus_cycles = 0, logged = 0;
   int exit_code = EXIT_STOP;
 
-  // Reset needs at least 4 clocks while RESET is high.
-  sio_hw->gpio_set = 1u << PIN_RESET;
-  for (int i = 0; i < 16; i++) {
-    sio_hw->gpio_clr = clk;
-    spin(la + 20);
-    sio_hw->gpio_set = clk;
-    spin(lh + 20);
-  }
-  // From here on gpio_out is only ever CLK or data: RESET stays low.
-  sio_hw->gpio_clr = 1u << PIN_RESET;
+  gpio_reset_cpu();
 
   uint64_t start = time_us_64();
   while (true) {
@@ -465,7 +500,27 @@ void __not_in_flash_func(gpio_run_nolog)() { gpio_bus_run(BUS_NOLOG); }
 void __not_in_flash_func(gpio_run_iolog)() { gpio_bus_run(BUS_IOLOG); }
 void __not_in_flash_func(gpio_run_fulllog)() { gpio_bus_run(BUS_FULLLOG); }
 void __not_in_flash_func(gpio_run_comlog)() { gpio_bus_run(BUS_COMLOG); }
-void __not_in_flash_func(gpio_run_hidos)() { gpio_bus_run(BUS_HIDOS); }
+// HIDOS mode runs the hand-written engine in gpio_hidos.S (no logging, no
+// cycle limit, no idle timeout: 's' stops it).
+void __not_in_flash_func(gpio_run_hidos)() {
+  GpioAsmCtx &ctx = gpio_asm_ctx;
+  ctx.ram = ram;
+  ctx.stop = &stop_request;
+  ctx.io_running = &io_running;
+  ctx.io_value = &io_value;
+  gpio_reset_cpu();
+  uint64_t start = time_us_64();
+  int exit_code = gpio_hidos_loop(&ctx);
+  uint64_t end = time_us_64();
+  sio_hw->gpio_oe_clr = 0xFFFF;
+  sio_hw->gpio_set = 1u << PIN_RESET;
+
+  // The last T1 count may be a stop check, not a clock: off by one at most.
+  execution_time_us = (int)(end - start);
+  executed_cycles = ctx.bus_cycles;
+  executed_clocks = ctx.t1_clocks + 3u * ctx.bus_cycles;
+  core1_exit = exit_code;
+}
 
 // ------------------------------------------
 //   PWM clock engine (free-running clock, polling)
@@ -2170,6 +2225,16 @@ int main() {
         if (!set_sys_mhz(strtoul(args + 1, NULL, 10)))
           printf("Error: unsupported Pico clock.\n");
         print_clock_status();
+      } else if (args[0] == 'p') {
+        // Per-phase override of the HIDOS engine's spin counts (tuning).
+        char *q;
+        uint32_t ph = strtoul(args + 1, &q, 10);
+        uint32_t n = strtoul(q, NULL, 10);
+        if (ph < GA_PHASES && n > 0)
+          gpio_asm_ctx.loops[ph] = n;
+        for (int i = 0; i < GA_PHASES; i++)
+          printf(" %lu", gpio_asm_ctx.loops[i]);
+        printf("\n");
       } else if (args[0] == 'g') {
         uint32_t v[3] = {GPIO_DEFAULT_ADDR_NS, GPIO_DEFAULT_LOW_NS,
                          GPIO_DEFAULT_HIGH_NS};
