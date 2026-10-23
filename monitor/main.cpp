@@ -4,10 +4,10 @@
  */
 
 #include "hardware/clocks.h"
+#include "hardware/vreg.h"
 #include "hardware/gpio.h"
 #include "hardware/pwm.h" // Added for clock generation
 #include "hardware/structs/sio.h"
-#include "hardware/structs/systick.h"
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
 #include "pico/bootrom.h"
@@ -53,7 +53,7 @@ struct __attribute__((packed)) BusLog {
 };
 
 // --- Globals ---
-uint8_t ram[RAM_SIZE];
+uint8_t ram[RAM_SIZE] __attribute__((aligned(4)));
 BusLog trace_log[MAX_CYCLES];
 
 volatile bool stop_request = false;
@@ -85,12 +85,18 @@ static uint32_t current_freq_hz = 500000;
 // CLOCK_PWM: free-running PWM clock at current_freq_hz, core 1 polls the bus.
 enum ClockMode { CLOCK_PWM, CLOCK_GPIO };
 volatile ClockMode clock_mode = CLOCK_GPIO;
-// GPIO clock: minimum CLK low/high width. The bus is sampled at the end of the
-// low phase, so the low width must cover the V30's output delays.
-static uint32_t gpio_clk_low_ns = 250;
-static uint32_t gpio_clk_high_ns = 125;
-volatile uint32_t gpio_clk_low_cycles; // in sys clock cycles
-volatile uint32_t gpio_clk_high_cycles;
+// GPIO clock delays (see gpio_bus_run), added to the engine's own time:
+//   addr: CLK low before sampling ALE/address in T1 (V30 output delay)
+//   low : T2 CLK low
+//   high: T2/T3 CLK high (also the read data setup time before T4)
+#define GPIO_DEFAULT_ADDR_NS 72
+#define GPIO_DEFAULT_LOW_NS 24
+#define GPIO_DEFAULT_HIGH_NS 36
+static uint32_t gpio_addr_ns = GPIO_DEFAULT_ADDR_NS;
+static uint32_t gpio_low_ns = GPIO_DEFAULT_LOW_NS;
+static uint32_t gpio_high_ns = GPIO_DEFAULT_HIGH_NS;
+// The same in spin() loops (3 sys clocks each).
+volatile uint32_t gpio_addr_loops, gpio_low_loops, gpio_high_loops;
 
 // --- XMODEM Constants ---
 #define SOH 0x01
@@ -183,13 +189,17 @@ void setup_clock(uint32_t freq_hz) {
   pwm_set_enabled(slice_num, false);
 
   pwm_config cfg = pwm_get_default_config();
-  // With 250MHz sys clock, freq = 250M / ((wrap + 1) * div)
-  pwm_config_set_wrap(&cfg, setting->wrap);
-  pwm_config_set_clkdiv(&cfg, setting->div);
+  // freq = sys clock / ((wrap + 1) * div), div < 256
+  uint32_t wrap = setting->wrap;
+  float div;
+  while ((div = (float)clock_get_hz(clk_sys) / freq_hz / (wrap + 1)) >= 256)
+    wrap = wrap * 2 + 1;
+  pwm_config_set_wrap(&cfg, wrap);
+  pwm_config_set_clkdiv(&cfg, div);
   pwm_init(slice_num, &cfg, true);
 
   // Set 50% duty cycle
-  pwm_set_gpio_level(PIN_CLK_OUT, (setting->wrap + 1) / 2);
+  pwm_set_gpio_level(PIN_CLK_OUT, (wrap + 1) / 2);
 
   // Re-enable PWM
   pwm_set_enabled(slice_num, true);
@@ -201,32 +211,34 @@ void setup_clock(uint32_t freq_hz) {
 /**
  * @brief CLKピンをGPIO出力に切り替え、Core 1がバス処理と同期してクロックを
  * 生成するモードにします。
- * @param low_ns CLK Low幅の最小値 (ns)。この期間の終わりでバスをサンプルする。
- * @param high_ns CLK High幅の最小値 (ns)
+ * @param addr_ns T1でアドレスをサンプルするまでのCLK Low待ち (ns)
+ * @param low_ns T2のCLK Low待ち (ns)
+ * @param high_ns T2/T3のCLK High待ち (ns)
  * @return なし
  */
-void setup_gpio_clock(uint32_t low_ns, uint32_t high_ns) {
+void setup_gpio_clock(uint32_t addr_ns, uint32_t low_ns, uint32_t high_ns) {
   pwm_set_enabled(pwm_gpio_to_slice_num(PIN_CLK_OUT), false);
   gpio_init(PIN_CLK_OUT);
   gpio_set_dir(PIN_CLK_OUT, GPIO_OUT);
   gpio_put(PIN_CLK_OUT, 0);
 
   uint32_t sys_mhz = clock_get_hz(clk_sys) / 1000000;
-  gpio_clk_low_ns = low_ns;
-  gpio_clk_high_ns = high_ns;
-  gpio_clk_low_cycles = low_ns * sys_mhz / 1000;
-  gpio_clk_high_cycles = high_ns * sys_mhz / 1000;
+  auto loops = [&](uint32_t ns) { return (ns * sys_mhz / 1000 + 2) / 3; };
+  gpio_addr_ns = addr_ns;
+  gpio_low_ns = low_ns;
+  gpio_high_ns = high_ns;
+  gpio_addr_loops = loops(addr_ns);
+  gpio_low_loops = loops(low_ns);
+  gpio_high_loops = loops(high_ns);
   clock_mode = CLOCK_GPIO;
 }
 
 void print_clock_status() {
   if (clock_mode == CLOCK_GPIO) {
-    printf("Clock: GPIO, low >= %lu ns, high >= %lu ns", gpio_clk_low_ns,
-           gpio_clk_high_ns);
-    if (gpio_clk_low_ns + gpio_clk_high_ns > 0)
-      printf(" (max %lu kHz)",
-             1000000 / (gpio_clk_low_ns + gpio_clk_high_ns));
-    printf("\n");
+    printf("Clock: GPIO, addr %lu ns, low %lu ns, high %lu ns (+ engine "
+           "time), Pico %lu MHz\n",
+           gpio_addr_ns, gpio_low_ns, gpio_high_ns,
+           clock_get_hz(clk_sys) / 1000000);
   } else {
     printf("Clock: PWM, %lu kHz\n", current_freq_hz / 1000);
   }
@@ -285,144 +297,158 @@ __force_inline bool should_log(int mode, bool is_io, uint32_t addr) {
 // ------------------------------------------
 //   GPIO clock engine
 // ------------------------------------------
-// Core 1 generates CLK itself and advances the V30 one clock at a time. The
-// bus is sampled once at the end of every CLK low phase, so each T-state is
-// seen exactly once and the Pico can never fall behind the CPU: when handling
-// a bus cycle takes longer, that clock is simply stretched. SysTick enforces
-// the minimum low/high widths (gpio_clk_low_cycles/high_cycles).
+// Core 1 generates CLK itself and walks the V30 through each bus cycle with
+// straight-line code (T1 -> T2 -> T3 -> T4), so the Pico can never fall
+// behind the CPU: when handling a T-state takes longer, that clock is simply
+// stretched. Every T-state starts with the CLK falling edge. Work is done in
+// the high phase where possible, so it overlaps the V30's minimum high time.
 //
-//   T1    : ALE high -> latch address, IO/M, BHE (A16-19/BHE become status
-//           later) and prefetch the read data.
-//   T2/T3 : RD low -> drive AD0-15 at T3. WR low -> latch data at T3 and
-//           commit.
-//   T4    : release AD0-15. The V30 latched read data at the T4 falling
-//           edge, and won't drive the next address until the next T1.
+//   Ti/T1 : low for gpio_addr_loops, then sample. ALE high -> latch address,
+//           IO/M, BHE (A16-19/BHE become status later) and prefetch the
+//           read data while CLK is high.
+//   T2    : RD/WR go low.
+//   T3    : RD low -> drive AD0-15 and raise CLK together; the high phase is
+//           the data setup time before the T4 edge. WR low -> latch data,
+//           raise CLK and commit. Neither -> HLT.
+//   T4    : release AD0-15 right at the falling edge (the V30 latched read
+//           data there; driving longer fights the V30).
+// T2-T4 (and idle clocks) are low for gpio_low_loops and high for
+// gpio_high_loops, on top of the instructions in that phase.
 // READY is tied high, so T3 and T4 always follow T2 without wait states.
+//
+// Limits found on the board with SANITY (addr/low/high ns, avg V30 clock):
+//   Pico 250MHz: 60/12/24 -> 6.3MHz.  Pico 400MHz: 60/36/30 -> 7.1MHz.
 
 #define GPIO_IDLE_LIMIT (1u << 22) // clocks without ALE before giving up
 
-__force_inline void clk_wait(uint32_t t0, uint32_t cycles) {
-  // SysTick counts down, 24 bits.
-  while (((t0 - systick_hw->cvr) & 0xFFFFFF) < cycles)
-    ;
+// Busy wait, 3 sys clocks per loop (sub + taken bne on the M0+, from RAM).
+// The memory clobber keeps it in order with the SIO register writes.
+__force_inline void spin(uint32_t n) {
+  if (n)
+    asm volatile("1: sub %0, #1\n bne 1b" : "+l"(n) : : "cc", "memory");
 }
 
 __force_inline void gpio_bus_run(const int mode) {
   const uint32_t clk = 1u << PIN_CLK_OUT;
-  const uint32_t lo = gpio_clk_low_cycles;
-  const uint32_t hi = gpio_clk_high_cycles;
+  const uint32_t la = gpio_addr_loops;
+  const uint32_t ll = gpio_low_loops;
+  const uint32_t lh = gpio_high_loops;
   const int limit = cycle_limit;
 
-  uint32_t clocks = 0, idle = 0;
+  uint32_t idle_clocks = 0;
   int bus_cycles = 0, logged = 0;
   int exit_code = EXIT_STOP;
-
-  int tstate = 0; // 0: idle, 1-4: T1-T4 of the current bus cycle
-  int op = 0;     // 0: not yet known, 1: read, 2: write
-  uint32_t addr = 0;
-  bool is_io = false, bhe_low = false;
-  uint16_t data = 0;
 
   // Reset needs at least 4 clocks while RESET is high.
   sio_hw->gpio_set = 1u << PIN_RESET;
   for (int i = 0; i < 16; i++) {
     sio_hw->gpio_clr = clk;
-    clk_wait(systick_hw->cvr, lo + 16);
+    spin(la + 20);
     sio_hw->gpio_set = clk;
-    clk_wait(systick_hw->cvr, hi + 16);
+    spin(lh + 20);
   }
+  // From here on gpio_out is only ever CLK or data: RESET stays low.
   sio_hw->gpio_clr = 1u << PIN_RESET;
 
   uint64_t start = time_us_64();
   while (true) {
-    sio_hw->gpio_clr = clk;
-    clk_wait(systick_hw->cvr, lo);
-    const uint32_t pins = sio_hw->gpio_in;
-    clocks++;
-
-    if (tstate == 0) {
-      if (pins & (1u << PIN_ALE)) {
-        tstate = 1;
-        op = 0;
-        idle = 0;
-        addr = (pins & 0xFFFF) | (((pins >> PIN_A16) & 0xF) << 16);
-        is_io = !(pins & (1u << PIN_IOM));
-        bhe_low = !(pins & (1u << PIN_BHE));
-        if (!is_io) {
-          uint32_t a = addr & ~1u;
-          data = ram[map_address(a)] | (ram[map_address(a + 1)] << 8);
-        } else if (mode == BUS_HIDOS && addr == 0x88) {
-          data = io_running;
-        } else {
-          data = 0xFFFF;
-        }
-      } else if (++idle >= GPIO_IDLE_LIMIT) {
-        exit_code = EXIT_NO_ALE;
+    // Ti / T1
+    uint32_t pins;
+    uint32_t idle = 0;
+    while (true) {
+      sio_hw->gpio_clr = clk;
+      spin(la);
+      pins = sio_hw->gpio_in;
+      sio_hw->gpio_set = clk;
+      if (pins & (1u << PIN_ALE))
         break;
+      if (++idle >= GPIO_IDLE_LIMIT) {
+        exit_code = EXIT_NO_ALE;
+        idle_clocks += idle;
+        goto out;
       }
+      if (stop_request) {
+        idle_clocks += idle;
+        goto out;
+      }
+      spin(lh);
+    }
+    idle_clocks += idle;
+    const uint32_t addr = (pins & 0xFFFF) | ((pins >> (PIN_A16 - 16)) & 0xF0000);
+    const bool is_io = !(pins & (1u << PIN_IOM));
+    const bool bhe_low = !(pins & (1u << PIN_BHE));
+    uint16_t *const word = (uint16_t *)&ram[map_address(addr & ~1u)];
+    uint32_t data;
+    if (!is_io)
+      data = *word;
+    else if (mode == BUS_HIDOS && addr == 0x88)
+      data = io_running;
+    else
+      data = 0xFFFF;
+
+    // T2
+    sio_hw->gpio_clr = clk;
+    spin(ll);
+    sio_hw->gpio_set = clk;
+    spin(lh);
+
+    // T3
+    sio_hw->gpio_clr = clk;
+    spin(ll);
+    pins = sio_hw->gpio_in;
+    const bool is_read = !(pins & (1u << PIN_RD));
+    if (is_read) {
+      // Drive in T3 (not as soon as RD falls in T2) so the V30 has a full
+      // clock to float AD0-15. CLK rises together with the data.
+      sio_hw->gpio_oe_set = 0xFFFF;
+      sio_hw->gpio_out = data | clk;
+      spin(lh);
+    } else if (!(pins & (1u << PIN_WR))) {
+      sio_hw->gpio_set = clk;
+      data = pins & 0xFFFF;
+      if (!is_io) {
+        if (bhe_low && !(addr & 1)) // Word Write to even address
+          *word = data;
+        else if (bhe_low) // High Byte Write to odd address
+          ram[map_address(addr)] = data >> 8;
+        else if (!(addr & 1)) // Low Byte Write to even address
+          ram[map_address(addr)] = data & 0xFF;
+      } else if (mode == BUS_HIDOS && addr == 0x86) {
+        io_value = data;
+        __dmb();
+        io_running = 1;
+      }
+      spin(lh);
     } else {
-      tstate++;
-      if (op == 0) {
-        if (!(pins & (1u << PIN_RD))) {
-          op = 1;
-        } else if (!(pins & (1u << PIN_WR))) {
-          op = 2;
-        } else if (tstate >= 3) {
-          exit_code = EXIT_HALT;
-          break;
-        }
-      }
-      if (op == 1 && tstate == 3) {
-        // Drive in T3 (not as soon as RD falls in T2) so the V30 has a full
-        // clock to float AD0-15. Setup time to the T4 edge is the high phase.
-        sio_hw->gpio_set = data;
-        sio_hw->gpio_clr = (~data) & 0xFFFF;
-        sio_hw->gpio_oe_set = 0xFFFF;
-      } else if (op == 2 && tstate == 3) {
-        data = pins & 0xFFFF;
-        if (!is_io) {
-          bool a0_low = !(addr & 1);
-          if (bhe_low && a0_low) { // Word Write to even address
-            ram[map_address(addr)] = data & 0xFF;
-            ram[map_address(addr + 1)] = data >> 8;
-          } else if (bhe_low) { // High Byte Write to odd address
-            ram[map_address(addr)] = data >> 8;
-          } else if (a0_low) { // Low Byte Write to even address
-            ram[map_address(addr)] = data & 0xFF;
-          }
-        } else if (mode == BUS_HIDOS && addr == 0x86) {
-          io_value = data;
-          __dmb();
-          io_running = 1;
-        }
-      }
-      if (tstate == 4) {
-        if (op == 1)
-          sio_hw->gpio_oe_clr = 0xFFFF;
-        tstate = 0;
-        bus_cycles++;
-        if (mode != BUS_NOLOG && mode != BUS_HIDOS &&
-            should_log(mode, is_io, addr)) {
-          uint8_t type = is_io ? (op == 1 ? LOG_IO_RD : LOG_IO_WR)
-                               : (op == 1 ? LOG_MEM_RD : LOG_MEM_WR);
-          trace_log[logged++] = {addr, data, type, (uint8_t)bhe_low};
-          if (logged >= MAX_CYCLES) {
-            exit_code = EXIT_LOG_FULL;
-            break;
-          }
-        }
-        if (mode != BUS_HIDOS && bus_cycles >= limit) { // HIDOS runs until 's'
-          exit_code = EXIT_LIMIT;
-          break;
-        }
+      exit_code = EXIT_HALT;
+      goto out;
+    }
+
+    // T4
+    sio_hw->gpio_clr = clk;
+    sio_hw->gpio_oe_clr = 0xFFFF;
+    spin(ll);
+    sio_hw->gpio_set = clk;
+    bus_cycles++;
+    if (mode != BUS_NOLOG && mode != BUS_HIDOS &&
+        should_log(mode, is_io, addr)) {
+      uint8_t type = is_io ? (is_read ? LOG_IO_RD : LOG_IO_WR)
+                           : (is_read ? LOG_MEM_RD : LOG_MEM_WR);
+      trace_log[logged++] = {addr, (uint16_t)data, type, (uint8_t)bhe_low};
+      if (logged >= MAX_CYCLES) {
+        exit_code = EXIT_LOG_FULL;
+        goto out;
       }
     }
+    if (mode != BUS_HIDOS && bus_cycles >= limit) { // HIDOS runs until 's'
+      exit_code = EXIT_LIMIT;
+      goto out;
+    }
     if (stop_request)
-      break;
-
-    sio_hw->gpio_set = clk;
-    clk_wait(systick_hw->cvr, hi);
+      goto out;
+    spin(lh);
   }
+out:
   uint64_t end = time_us_64();
 
   sio_hw->gpio_oe_clr = 0xFFFF;
@@ -430,7 +456,7 @@ __force_inline void gpio_bus_run(const int mode) {
 
   execution_time_us = (int)(end - start);
   executed_cycles = bus_cycles;
-  executed_clocks = clocks;
+  executed_clocks = idle_clocks + 4u * bus_cycles;
   core1_exit = exit_code;
 }
 
@@ -740,11 +766,6 @@ void core1_entry() {
   gpio_init(PIN_RESET);
   gpio_set_dir(PIN_RESET, GPIO_OUT);
   gpio_put(PIN_RESET, 1);
-
-  // Free-running 24-bit SysTick on the processor clock (for clk_wait).
-  systick_hw->rvr = 0x00FFFFFF;
-  systick_hw->cvr = 0;
-  systick_hw->csr = 0x5; // CLKSOURCE=processor, ENABLE
 
   while (true) {
     uint32_t command = multicore_fifo_pop_blocking();
@@ -1957,15 +1978,37 @@ void wait_core1() {
   multicore_fifo_pop_blocking();
 }
 
+// Pico system clock. The GPIO clock engine's own time scales with it.
+// Above 250MHz the core voltage is raised; flash runs at sys clock / 4
+// (CMakeLists.txt), up to 133MHz.
+#define DEFAULT_SYS_MHZ 250
+
+bool set_sys_mhz(uint32_t mhz) {
+  if (mhz < 125 || mhz > 532 || !check_sys_clock_khz(mhz * 1000, NULL, NULL, NULL))
+    return false;
+  if (mhz > 250) {
+    vreg_set_voltage(VREG_VOLTAGE_1_30);
+    sleep_ms(10);
+  }
+  set_sys_clock_khz(mhz * 1000, true);
+  if (mhz <= 250)
+    vreg_set_voltage(VREG_VOLTAGE_DEFAULT);
+  if (clock_mode == CLOCK_GPIO)
+    setup_gpio_clock(gpio_addr_ns, gpio_low_ns, gpio_high_ns);
+  else
+    setup_clock(current_freq_hz);
+  return true;
+}
+
 int main() {
-  set_sys_clock_khz(250000, true);
+  set_sys_mhz(DEFAULT_SYS_MHZ);
   usb_ports_init(hidos_service);
 
   gpio_init(PIN_LED);
   gpio_set_dir(PIN_LED, GPIO_OUT);
 
   // Setup V30 clock (core 1 generates it from GPIO)
-  setup_gpio_clock(gpio_clk_low_ns, gpio_clk_high_ns);
+  setup_gpio_clock(gpio_addr_ns, gpio_low_ns, gpio_high_ns);
 
   memset(ram, 0xF4, RAM_SIZE); // Default to HLT
   multicore_launch_core1(core1_entry);
@@ -2027,9 +2070,12 @@ int main() {
              "omit for infinite)\n");
       printf(" g              : Run Loop (Key stop)\n");
       printf(" c              : Show clock setting\n");
-      printf(" c g [lo] [hi]  : GPIO clock, min CLK low/high ns (default "
-             "250 125, 0 0 = fastest)\n");
+      printf(" c g [a] [l] [h]: GPIO clock, T1 addr/low/high delay ns "
+             "(default %d %d %d)\n",
+             GPIO_DEFAULT_ADDR_NS, GPIO_DEFAULT_LOW_NS, GPIO_DEFAULT_HIGH_NS);
       printf(" c <kHz>        : PWM clock at fixed frequency\n");
+      printf(" c s <MHz>      : Pico system clock (default %d)\n",
+             DEFAULT_SYS_MHZ);
       printf(" xr/xs          : XMODEM Recv/Send RAM\n");
       printf(" xl             : XMODEM Send Log\n");
       printf(" v              : Version\n");
@@ -2112,27 +2158,30 @@ int main() {
     } else if (strcmp(cmd, "c") == 0) {
       if (!args || strlen(args) == 0) {
         print_clock_status();
-        printf("Usage: c g [low_ns] [high_ns]  (GPIO clock)\n");
-        printf("       c <freq_khz>            (PWM clock)\n");
+        printf("Usage: c g [addr_ns] [low_ns] [high_ns]  (GPIO clock)\n");
+        printf("       c s <MHz>                         (Pico clock)\n");
+        printf("       c <freq_khz>                      (PWM clock)\n");
         printf("PWM frequencies (kHz):");
         for (const auto &setting : freq_table) {
           printf(" %lu", setting.freq_hz / 1000);
         }
         printf("\n");
+      } else if (args[0] == 's') {
+        if (!set_sys_mhz(strtoul(args + 1, NULL, 10)))
+          printf("Error: unsupported Pico clock.\n");
+        print_clock_status();
       } else if (args[0] == 'g') {
+        uint32_t v[3] = {GPIO_DEFAULT_ADDR_NS, GPIO_DEFAULT_LOW_NS,
+                         GPIO_DEFAULT_HIGH_NS};
         char *p = (char *)args + 1;
-        uint32_t lo = strtoul(p, &p, 10);
-        bool has_lo = p != args + 1;
-        char *q = p;
-        uint32_t hi = strtoul(q, &q, 10);
-        bool has_hi = q != p;
-        if (!has_lo) {
-          lo = 250;
-          hi = 125;
-        } else if (!has_hi) {
-          hi = lo;
+        for (int i = 0; i < 3; i++) {
+          char *q = p;
+          uint32_t n = strtoul(q, &p, 10);
+          if (p == q)
+            break;
+          v[i] = n;
         }
-        setup_gpio_clock(lo, hi);
+        setup_gpio_clock(v[0], v[1], v[2]);
         print_clock_status();
       } else {
         uint32_t new_freq_khz = strtol(args, NULL, 10);

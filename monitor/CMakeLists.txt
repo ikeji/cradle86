@@ -63,6 +63,11 @@ set_source_files_properties(
 
 add_executable(v30_control main.cpp usb_ports.c usb_descriptors.c)
 
+# Overclocking (c s <MHz>) needs a slower flash clock: sys clock / 4.
+pico_define_boot_stage2(v30_boot2 ${PICO_DEFAULT_BOOT_STAGE2_FILE})
+target_compile_definitions(v30_boot2 PRIVATE PICO_FLASH_SPI_CLKDIV=4)
+pico_set_boot_stage2(v30_control v30_boot2)
+
 # tusb_config.h
 target_include_directories(v30_control PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -80,6 +85,7 @@ target_link_libraries(v30_control
     pico_multicore  # デュアルコア用
     hardware_gpio
     hardware_clocks
+    hardware_vreg
     hardware_pwm # Added for PWM functionality
     pico_unique_id
     tinyusb_device # 4ポートCDC (usb_ports.c)
