@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>cradle86 Web Terminal (V30 / 80C88)</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #171c23;
+    --border: #2a3340;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #3fb950;
+    --accent2: #58a6ff;
+    --warn: #d29922;
+    --danger: #f85149;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+  }
+  .app {
+    display: flex; flex-direction: column; height: 100dvh; width: 100%;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  .brand {
+    font-weight: 700; font-size: 14px; letter-spacing: 0.03em; margin-right: 4px;
+    color: var(--accent);
+  }
+  .status {
+    font-size: 12px; color: var(--muted); margin-right: auto;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .status.ok { color: var(--accent); }
+  .status.err { color: var(--danger); }
+
+  button {
+    appearance: none; border: 1px solid var(--border); background: #212832;
+    color: var(--text); border-radius: 6px; padding: 5px 10px;
+    font-size: 12px; font-weight: 600; cursor: pointer; touch-action: manipulation;
+    white-space: nowrap;
+  }
+  button:active { transform: translateY(1px); }
+  button.primary { background: #1f6feb; border-color: #388bfd; color: #fff; }
+  button.go { background: #238636; border-color: #2ea043; color: #fff; }
+  button.danger { background: #b62324; border-color: #f85149; color: #fff; }
+  button.active { background: #2d3748; border-color: var(--accent2); color: var(--accent2); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .toolbar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
+    padding: 5px 10px; background: #131820; border-bottom: 1px solid var(--border);
+  }
+  .toolbar .sep {
+    width: 1px; height: 18px; background: var(--border); margin: 0 2px;
+  }
+
+  .tabs {
+    display: none; gap: 4px; padding: 4px 10px; background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .tabs button { flex: 1; padding: 6px; }
+
+  .panes {
+    flex: 1; display: flex; min-height: 0; overflow: hidden;
+  }
+  .pane {
+    flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    border-right: 1px solid var(--border);
+  }
+  .pane:last-child { border-right: none; }
+  .pane-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 3px 8px; background: #141921; border-bottom: 1px solid var(--border);
+    font-size: 11px; color: var(--muted);
+  }
+  .pane-head strong { color: var(--text); font-size: 12px; }
+  .term-wrap {
+    flex: 1; min-height: 0; padding: 4px; background: #000; overflow: auto;
+    display: flex; align-items: flex-start; justify-content: flex-start;
+  }
+  #pane-mon { flex: 0.72; }
+  #pane-dos { flex: 1.28; }
+
+  .softkeys {
+    display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 5px;
+    padding: 6px 8px; background: var(--panel); border-top: 1px solid var(--border);
+    -webkit-overflow-scrolling: touch;
+  }
+  .softkeys button {
+    padding: 7px 10px; font-size: 12px; flex: 0 0 auto;
+  }
+
+  /* Mobile / narrow screens: tab switch instead of side-by-side */
+  @media (max-width: 860px) {
+    .tabs { display: flex; }
+    .pane { display: none; border-right: none; }
+    .pane.visible { display: flex; }
+    .pane-head { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <span class="brand">cradle86</span>
+    <span id="status" class="status">未接続</span>
+    <button id="btn-webusb" class="primary" title="Android Chrome 推奨: 1回でMonitor+DOS+Disk B:同時接続">USB接続 (3ポート同時)</button>
+    <button id="btn-ser-mon" title="PC向け Web Serial: Monitor (port 0)">Serial: Monitor</button>
+    <button id="btn-ser-dos" title="PC向け Web Serial: DOS (port 1)">Serial: DOS</button>
+    <button id="btn-ser-disk" title="PC向け Web Serial: Virtual Disk B: (port 3)">Serial: Disk B:</button>
+    <button id="btn-disc" class="danger" disabled>切断</button>
+  </header>
+
+  <div class="toolbar">
+    <button id="btn-start-dos" class="go" disabled>▶ DOS起動 (h)</button>
+    <button id="btn-stop-dos" class="danger" disabled>■ 停止 (s)</button>
+    <button id="btn-cpu" disabled>CPU確認</button>
+    <span class="sep"></span>
+    <button id="btn-sanity" disabled>SANITY</button>
+    <button id="btn-mandel" disabled>MANDEL</button>
+    <button id="btn-life" disabled>LIFE</button>
+    <button id="btn-vi" disabled>VI</button>
+    <button id="btn-dir" disabled>DIR</button>
+    <span class="sep"></span>
+    <button id="btn-disk-load" title="FAT12イメージをB:にマウント">B:読込</button>
+    <button id="btn-disk-save" title="現在のB:イメージを保存">B:保存</button>
+    <button id="btn-disk-reset" title="B:を空の1MB FAT12で初期化">B:初期化</button>
+    <span id="disk-stat" style="font-size:11px;color:var(--muted);margin-left:2px;">B: RAM 1MB</span>
+    <input id="disk-file" type="file" accept=".img,.bin,.dsk,application/octet-stream" style="display:none">
+    <span class="sep"></span>
+    <button id="btn-font-dec" title="文字を小さく">A-</button>
+    <button id="btn-font-inc" title="文字を大きく">A+</button>
+    <button id="btn-fit" title="画面幅に合わせる">幅自動</button>
+  </div>
+
+  <div class="tabs">
+    <button id="tab-dos" class="active">DOS コンソール</button>
+    <button id="tab-mon">モニタ (Monitor)</button>
+  </div>
+
+  <div class="panes">
+    <section id="pane-dos" class="pane visible">
+      <div class="pane-head">
+        <strong>DOS Console (Port 1 / if02)</strong>
+        <span id="dos-state">offline</span>
+      </div>
+      <div class="term-wrap"><div id="term-dos"></div></div>
+    </section>
+    <section id="pane-mon" class="pane">
+      <div class="pane-head">
+        <strong>Monitor (Port 0 / if00)</strong>
+        <span id="mon-state">offline</span>
+      </div>
+      <div class="term-wrap"><div id="term-mon"></div></div>
+    </section>
+  </div>
+
+  <div class="softkeys">
+    <button data-key="esc">ESC</button>
+    <button data-key="ctrlc">Ctrl+C</button>
+    <button data-key="enter">Enter</button>
+    <button data-key="bs">BS</button>
+    <button data-key="tab">Tab</button>
+    <button data-key="up">↑</button>
+    <button data-key="down">↓</button>
+    <button data-key="left">←</button>
+    <button data-key="right">→</button>
+    <button data-key="q">q</button>
+    <button data-key="r">r</button>
+    <button data-key="g">g</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  // USB descriptors from monitor/usb_descriptors.c
+  const VID = 0x1209;
+  const PID = 0x0001;
+  // CDC 0 (Monitor): ctrl if=0, data if=1, bulk OUT=2, bulk IN=2
+  // CDC 1 (DOS Con): ctrl if=2, data if=3, bulk OUT=4, bulk IN=4
+  // CDC 3 (Disk B:): ctrl if=6, data if=7, bulk OUT=8, bulk IN=8
+  const CDC_MON  = { ctrlIf: 0, dataIf: 1, epOut: 2, epIn: 2 };
+  const CDC_DOS  = { ctrlIf: 2, dataIf: 3, epOut: 4, epIn: 4 };
+  const CDC_DISK = { ctrlIf: 6, dataIf: 7, epOut: 8, epIn: 8 };
+
+  const statusEl = document.getElementById('status');
+  const monStateEl = document.getElementById('mon-state');
+  const dosStateEl = document.getElementById('dos-state');
+  const diskStatEl = document.getElementById('disk-stat');
+  const paneDos = document.getElementById('pane-dos');
+  const paneMon = document.getElementById('pane-mon');
+  const tabDos = document.getElementById('tab-dos');
+  const tabMon = document.getElementById('tab-mon');
+
+  let activeTab = 'dos';
+  let fontSize = 13;
+
+  function makeTerm(cols, rows) {
+    return new Terminal({
+      cols, rows,
+      fontSize,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+      cursorBlink: true,
+      scrollback: 1000,
+      theme: {
+        background: '#000000',
+        foreground: '#e6edf3',
+        cursor: '#3fb950',
+      },
+    });
+  }
+
+  const termDos = makeTerm(80, 25);
+  const termMon = makeTerm(80, 25);
+  termDos.open(document.getElementById('term-dos'));
+  termMon.open(document.getElementById('term-mon'));
+
+  // Shift_JIS decoders (streaming)
+  const decDos = new TextDecoder('shift_jis', { fatal: false });
+  const decMon = new TextDecoder('utf-8', { fatal: false });
+  const enc = new TextEncoder();
+
+  // Connection state
+  let usbDev = null;
+  let usbRunning = false;
+  let serMon = null, serMonWriter = null, serMonReader = null;
+  let serDos = null, serDosWriter = null, serDosReader = null;
+  let serDisk = null, serDiskWriter = null, serDiskReader = null;
+
+  // Serialize WebUSB bulk OUT writes per endpoint
+  const outQueue = { mon: Promise.resolve(), dos: Promise.resolve(), disk: Promise.resolve() };
+
+  // ---- Virtual Disk B: (1MB FAT12 in RAM, 4096B/sector matching A:) ----
+  const DISK_SECTORS = 256;
+  const DISK_SEC_SZ = 4096;
+  const MEDIA_UNCHANGED = 1;
+  const MEDIA_CHANGED = 0xFFFF;
+  let diskImg = null;
+  let diskChanged = true;
+  let diskReads = 0, diskWrites = 0;
+
+  function makeEmptyFat12() {
+    const img = new Uint8Array(DISK_SECTORS * DISK_SEC_SZ);
+    const dv = new DataView(img.buffer);
+    img[0] = 0xEB; img[1] = 0x3C; img[2] = 0x90;
+    const oem = 'CRADLE86';
+    for (let i = 0; i < 8; i++) img[3 + i] = oem.charCodeAt(i);
+    dv.setUint16(11, DISK_SEC_SZ, true); // BytesPerSec = 4096
+    img[13] = 1;                         // SecPerClus = 1
+    dv.setUint16(14, 1, true);           // RsvdSecCnt = 1
+    img[16] = 2;                         // NumFATs = 2
+    dv.setUint16(17, 128, true);         // RootEntCnt = 128 (1 sector)
+    dv.setUint16(19, DISK_SECTORS, true);// TotSec16 = 256 (1MB)
+    img[21] = 0xF8;                      // Media
+    dv.setUint16(22, 1, true);           // FATSz16 = 1
+    dv.setUint16(24, 32, true);          // SecPerTrk
+    dv.setUint16(26, 64, true);          // NumHeads
+    img[38] = 0x29;                      // BootSig
+    dv.setUint32(39, 0x20260001, true);  // VolID
+    const lab = 'CRADLE86   ';
+    for (let i = 0; i < 11; i++) img[43 + i] = lab.charCodeAt(i);
+    const fs = 'FAT12   ';
+    for (let i = 0; i < 8; i++) img[54 + i] = fs.charCodeAt(i);
+    img[510] = 0x55; img[511] = 0xAA;
+    // FAT1 (sector 1) & FAT2 (sector 2)
+    for (const fatOff of [DISK_SEC_SZ, DISK_SEC_SZ * 2]) {
+      img[fatOff] = 0xF8; img[fatOff + 1] = 0xFF; img[fatOff + 2] = 0xFF;
+    }
+    return img;
+  }
+
+  function updateDiskStat() {
+    const kb = Math.round(diskImg.length / 1024);
+    const conn = isDiskConnected() ? 'online' : 'offline';
+    diskStatEl.textContent = `B: ${kb}KB (${conn}, R:${diskReads} W:${diskWrites})`;
+  }
+
+  diskImg = makeEmptyFat12();
+
+  // Streaming parser for disk_server.py protocol:
+  //   req: 'DK' op(u8) drive(u8) seq(u32) offset(u32) length(u32) [+ length bytes for 'W']
+  //   rsp: 'kd' op(u8) status(u8) seq(u32) value(u32) 0(u32)      [+ value bytes for 'R']
+  let diskRxBuf = new Uint8Array(0);
+  function concatU8(a, b) {
+    if (a.length === 0) return b.slice();
+    const out = new Uint8Array(a.length + b.length);
+    out.set(a, 0); out.set(b, a.length);
+    return out;
+  }
+  function sendDiskResp(op, status, seq, value, payload) {
+    const resp = new Uint8Array(16 + (payload ? payload.length : 0));
+    const dv = new DataView(resp.buffer);
+    resp[0] = 0x6B; resp[1] = 0x64; // 'kd'
+    resp[2] = op;
+    resp[3] = status;
+    dv.setUint32(4, seq, true);
+    dv.setUint32(8, value, true);
+    dv.setUint32(12, 0, true);
+    if (payload) resp.set(payload, 16);
+    sendBytes('disk', resp);
+  }
+  function onDiskBytes(chunk) {
+    diskRxBuf = concatU8(diskRxBuf, chunk);
+    while (diskRxBuf.length >= 16) {
+      // Resync to 'DK'
+      if (diskRxBuf[0] !== 0x44 || diskRxBuf[1] !== 0x4B) {
+        let idx = -1;
+        for (let i = 1; i < diskRxBuf.length - 1; i++) {
+          if (diskRxBuf[i] === 0x44 && diskRxBuf[i + 1] === 0x4B) { idx = i; break; }
+        }
+        diskRxBuf = idx >= 0 ? diskRxBuf.subarray(idx) : diskRxBuf.subarray(diskRxBuf.length - 1);
+        if (diskRxBuf.length < 16) return;
+      }
+      const dv = new DataView(diskRxBuf.buffer, diskRxBuf.byteOffset, 16);
+      const op = diskRxBuf[2];
+      const drive = diskRxBuf[3];
+      const seq = dv.getUint32(4, true);
+      const off = dv.getUint32(8, true);
+      const len = dv.getUint32(12, true);
+      const need = 16 + (op === 0x57 ? len : 0); // 'W' has payload
+      if (diskRxBuf.length < need) return;
+
+      const payload = op === 0x57 ? diskRxBuf.subarray(16, need) : null;
+      diskRxBuf = diskRxBuf.subarray(need);
+
+      if (drive !== 0) {
+        sendDiskResp(op, 1, seq, 0);
+      } else if (op === 0x52) { // 'R'
+        if (off + len <= diskImg.length) {
+          diskReads++;
+          sendDiskResp(op, 0, seq, len, diskImg.subarray(off, off + len));
+        } else {
+          sendDiskResp(op, 1, seq, 0);
+        }
+      } else if (op === 0x57) { // 'W'
+        if (off + len <= diskImg.length) {
+          diskImg.set(payload, off);
+          diskWrites++;
+          sendDiskResp(op, 0, seq, 0);
+        } else {
+          sendDiskResp(op, 1, seq, 0);
+        }
+      } else if (op === 0x43) { // 'C' media check
+        const v = diskChanged ? MEDIA_CHANGED : MEDIA_UNCHANGED;
+        diskChanged = false;
+        sendDiskResp(op, 0, seq, v);
+      } else {
+        sendDiskResp(op, 1, seq, 0);
+      }
+      updateDiskStat();
+    }
+  }
+
+  document.getElementById('btn-disk-reset').onclick = () => {
+    diskImg = makeEmptyFat12();
+    diskChanged = true;
+    diskReads = 0; diskWrites = 0;
+    updateDiskStat();
+  };
+  document.getElementById('btn-disk-save').onclick = () => {
+    const blob = new Blob([diskImg], { type: 'application/octet-stream' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'cradle86-b.img';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  const diskFileInput = document.getElementById('disk-file');
+  document.getElementById('btn-disk-load').onclick = () => diskFileInput.click();
+  diskFileInput.onchange = async () => {
+    const f = diskFileInput.files[0];
+    if (!f) return;
+    const buf = await f.arrayBuffer();
+    diskImg = new Uint8Array(buf);
+    diskChanged = true;
+    diskReads = 0; diskWrites = 0;
+    updateDiskStat();
+    diskFileInput.value = '';
+  };
+
+  function setStatus(msg, cls = '') {
+    statusEl.textContent = msg;
+    statusEl.className = 'status ' + cls;
+  }
+
+  function isMonConnected() { return !!(usbDev || serMon); }
+  function isDosConnected() { return !!(usbDev || serDos); }
+  function isDiskConnected() { return !!(usbDev || serDisk); }
+
+  function updateUI() {
+    const monOk = isMonConnected();
+    const dosOk = isDosConnected();
+    const diskOk = isDiskConnected();
+    monStateEl.textContent = monOk ? 'connected' : 'offline';
+    dosStateEl.textContent = dosOk ? 'connected' : 'offline';
+    updateDiskStat();
+
+    document.getElementById('btn-disc').disabled = !(monOk || dosOk || diskOk);
+    document.getElementById('btn-start-dos').disabled = !monOk;
+    document.getElementById('btn-stop-dos').disabled = !monOk;
+    document.getElementById('btn-cpu').disabled = !monOk;
+    for (const id of ['btn-sanity', 'btn-mandel', 'btn-life', 'btn-vi', 'btn-dir']) {
+      document.getElementById(id).disabled = !dosOk;
+    }
+
+    if (usbDev) {
+      setStatus(`WebUSB 接続中 (Mon+DOS+B:): ${usbDev.productName || 'cradle86'}`, 'ok');
+    } else if (monOk || dosOk || diskOk) {
+      setStatus(`WebSerial: ${monOk ? 'Mon ' : ''}${dosOk ? 'DOS ' : ''}${diskOk ? 'B:' : ''}`.trim(), 'ok');
+    } else {
+      setStatus('未接続');
+    }
+  }
+
+  function switchTab(which) {
+    activeTab = which;
+    tabDos.classList.toggle('active', which === 'dos');
+    tabMon.classList.toggle('active', which === 'mon');
+    paneDos.classList.toggle('visible', which === 'dos');
+    paneMon.classList.toggle('visible', which === 'mon');
+    (which === 'dos' ? termDos : termMon).focus();
+  }
+  tabDos.onclick = () => switchTab('dos');
+  tabMon.onclick = () => switchTab('mon');
+
+  function applyFontSize(sz) {
+    fontSize = Math.max(7, Math.min(24, sz));
+    termDos.options.fontSize = fontSize;
+    termMon.options.fontSize = fontSize;
+  }
+  function fitWidth() {
+    // Fit 80 columns nicely into the active terminal wrapper width
+    const wrap = (activeTab === 'dos' ? paneDos : paneMon).querySelector('.term-wrap');
+    const w = Math.max(240, wrap.clientWidth - 12);
+    // Monospace char width is ~0.60 * fontSize
+    const ideal = Math.floor(w / (80 * 0.61));
+    applyFontSize(Math.max(7, Math.min(16, ideal)));
+  }
+  document.getElementById('btn-font-dec').onclick = () => applyFontSize(fontSize - 1);
+  document.getElementById('btn-font-inc').onclick = () => applyFontSize(fontSize + 1);
+  document.getElementById('btn-fit').onclick = fitWidth;
+  window.addEventListener('resize', () => { if (window.innerWidth <= 860) fitWidth(); });
+  if (window.innerWidth <= 860) setTimeout(fitWidth, 50);
+
+  // ---- Write helpers ----
+  function sendBytes(which, bytes) {
+    if (usbDev) {
+      const ep = which === 'mon' ? CDC_MON.epOut
+               : which === 'dos' ? CDC_DOS.epOut : CDC_DISK.epOut;
+      outQueue[which] = outQueue[which].then(async () => {
+        if (!usbDev) return;
+        for (let i = 0; i < bytes.length; i += 64) {
+          await usbDev.transferOut(ep, bytes.subarray(i, i + 64));
+        }
+      }).catch(err => {
+        console.error('USB write error', err);
+      });
+      return;
+    }
+    const writer = which === 'mon' ? serMonWriter
+                 : which === 'dos' ? serDosWriter : serDiskWriter;
+    if (writer) {
+      writer.write(bytes).catch(err => console.error('Serial write error', err));
+    }
+  }
+
+  function sendText(which, str) {
+    sendBytes(which, enc.encode(str));
+  }
+
+  termMon.onData(data => sendText('mon', data));
+  termDos.onData(data => sendText('dos', data));
+
+  // ---- WebUSB (Android Chrome + 1-click dual port) ----
+  async function cdcSetup(dev, cfg) {
+    await dev.claimInterface(cfg.ctrlIf);
+    await dev.claimInterface(cfg.dataIf);
+    // SET_LINE_CODING: 115200 baud, 1 stop bit, no parity, 8 data bits
+    // (Never send 1200 baud on PORT_MON as that reboots Pico into BOOTSEL!)
+    const lineCoding = new Uint8Array([0x00, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x08]);
+    await dev.controlTransferOut({
+      requestType: 'class',
+      recipient: 'interface',
+      request: 0x20, // SET_LINE_CODING
+      value: 0,
+      index: cfg.ctrlIf,
+    }, lineCoding);
+    // SET_CONTROL_LINE_STATE: DTR=1, RTS=1 (required for TinyUSB tud_cdc_n_connected)
+    await dev.controlTransferOut({
+      requestType: 'class',
+      recipient: 'interface',
+      request: 0x22, // SET_CONTROL_LINE_STATE
+      value: 0x03,
+      index: cfg.ctrlIf,
+    });
+  }
+
+  async function usbReadLoop(dev, epIn, onData) {
+    while (usbRunning && usbDev === dev) {
+      try {
+        const res = await dev.transferIn(epIn, 64);
+        if (res.status === 'ok' && res.data && res.data.byteLength > 0) {
+          const bytes = new Uint8Array(res.data.buffer, res.data.byteOffset, res.data.byteLength);
+          onData(bytes);
+        } else if (res.status === 'stall') {
+          await dev.clearHalt('in', epIn);
+        }
+      } catch (err) {
+        if (usbRunning) {
+          console.error('USB read error on EP', epIn, err);
+          setStatus('USB 切断されました', 'err');
+          await disconnectAll();
+        }
+        break;
+      }
+    }
+  }
+
+  document.getElementById('btn-webusb').onclick = async () => {
+    if (!navigator.usb) {
+      setStatus('このブラウザは WebUSB 非対応です (Chrome を使用してください)', 'err');
+      return;
+    }
+    try {
+      await disconnectAll();
+      const dev = await navigator.usb.requestDevice({
+        filters: [{ vendorId: VID, productId: PID }],
+      });
+      await dev.open();
+      if (dev.configuration === null) {
+        await dev.selectConfiguration(1);
+      }
+      await cdcSetup(dev, CDC_MON);
+      await cdcSetup(dev, CDC_DOS);
+      await cdcSetup(dev, CDC_DISK);
+      usbDev = dev;
+      usbRunning = true;
+      diskRxBuf = new Uint8Array(0);
+      diskChanged = true;
+      updateUI();
+
+      usbReadLoop(dev, CDC_MON.epIn, b => termMon.write(decMon.decode(b, { stream: true })));
+      usbReadLoop(dev, CDC_DOS.epIn, b => termDos.write(decDos.decode(b, { stream: true })));
+      usbReadLoop(dev, CDC_DISK.epIn, onDiskBytes);
+
+      // Query monitor version/CPU right away
+      setTimeout(() => sendText('mon', '\rv\r'), 150);
+    } catch (err) {
+      if (err.name !== 'NotFoundError') {
+        console.error(err);
+        setStatus('WebUSB エラー: ' + err.message, 'err');
+      }
+    }
+  };
+
+  // ---- Web Serial (PC Chrome / Edge) ----
+  async function connectSerial(which) {
+    if (!navigator.serial) {
+      setStatus('このブラウザは Web Serial 非対応です (Android は「USB接続」を使用)', 'err');
+      return;
+    }
+    try {
+      const port = await navigator.serial.requestPort({
+        filters: [{ usbVendorId: VID, usbProductId: PID }],
+      });
+      await port.open({ baudRate: 115200 });
+      const writer = port.writable.getWriter();
+      const reader = port.readable.getReader();
+
+      if (which === 'mon') {
+        serMon = port; serMonWriter = writer; serMonReader = reader;
+      } else if (which === 'dos') {
+        serDos = port; serDosWriter = writer; serDosReader = reader;
+      } else {
+        serDisk = port; serDiskWriter = writer; serDiskReader = reader;
+        diskRxBuf = new Uint8Array(0);
+        diskChanged = true;
+      }
+      updateUI();
+
+      const term = which === 'mon' ? termMon : termDos;
+      const dec = which === 'mon' ? decMon : decDos;
+      (async () => {
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (value) {
+              if (which === 'disk') onDiskBytes(value);
+              else term.write(dec.decode(value, { stream: true }));
+            }
+          }
+        } catch (e) {
+          console.error('Serial read error', e);
+        } finally {
+          reader.releaseLock();
+        }
+      })();
+
+      if (which === 'mon') setTimeout(() => sendText('mon', '\rv\r'), 150);
+    } catch (err) {
+      if (err.name !== 'NotFoundError') {
+        setStatus('Web Serial エラー: ' + err.message, 'err');
+      }
+    }
+  }
+
+  document.getElementById('btn-ser-mon').onclick = () => connectSerial('mon');
+  document.getElementById('btn-ser-dos').onclick = () => connectSerial('dos');
+  document.getElementById('btn-ser-disk').onclick = () => connectSerial('disk');
+
+  async function disconnectAll() {
+    usbRunning = false;
+    if (usbDev) {
+      try { await usbDev.close(); } catch (_) {}
+      usbDev = null;
+    }
+    for (const [p, w, r] of [
+      [serMon, serMonWriter, serMonReader],
+      [serDos, serDosWriter, serDosReader],
+      [serDisk, serDiskWriter, serDiskReader],
+    ]) {
+      try { if (r) await r.cancel(); } catch (_) {}
+      try { if (w) w.releaseLock(); } catch (_) {}
+      try { if (p) await p.close(); } catch (_) {}
+    }
+    serMon = serMonWriter = serMonReader = null;
+    serDos = serDosWriter = serDosReader = null;
+    serDisk = serDiskWriter = serDiskReader = null;
+    updateUI();
+  }
+  document.getElementById('btn-disc').onclick = disconnectAll;
+
+  // ---- Demo Macro Buttons ----
+  document.getElementById('btn-start-dos').onclick = () => {
+    sendText('mon', 'h\r');
+    switchTab('dos');
+    // Auto-skip MS-DOS date/time prompts after boot
+    setTimeout(() => sendText('dos', '\r'), 2200);
+    setTimeout(() => sendText('dos', '\r'), 3200);
+  };
+  document.getElementById('btn-stop-dos').onclick = () => {
+    sendText('mon', 's\r');
+    switchTab('mon');
+  };
+  document.getElementById('btn-cpu').onclick = () => {
+    sendText('mon', 'cpu\r');
+    switchTab('mon');
+  };
+  document.getElementById('btn-sanity').onclick = () => { switchTab('dos'); sendText('dos', 'SANITY\r'); };
+  document.getElementById('btn-mandel').onclick = () => { switchTab('dos'); sendText('dos', 'MANDEL\r'); };
+  document.getElementById('btn-life').onclick   = () => { switchTab('dos'); sendText('dos', 'LIFE\r'); };
+  document.getElementById('btn-vi').onclick     = () => { switchTab('dos'); sendText('dos', 'VI\r'); };
+  document.getElementById('btn-dir').onclick    = () => { switchTab('dos'); sendText('dos', 'DIR\r'); };
+
+  // ---- Soft Keys ----
+  const keyMap = {
+    esc: '\x1b',
+    ctrlc: '\x03',
+    enter: '\r',
+    bs: '\x08',
+    tab: '\t',
+    up: '\x1b[A',
+    down: '\x1b[B',
+    left: '\x1b[D',
+    right: '\x1b[C',
+    q: 'q',
+    r: 'r',
+    g: 'g',
+  };
+  document.querySelectorAll('.softkeys button').forEach(btn => {
+    btn.onclick = () => {
+      const seq = keyMap[btn.dataset.key];
+      if (!seq) return;
+      const target = (window.innerWidth <= 860) ? activeTab : 'dos';
+      sendText(target, seq);
+    };
+  });
+
+  // Hide WebSerial buttons if browser doesn't support it (e.g. Android Chrome)
+  if (!navigator.serial) {
+    document.getElementById('btn-ser-mon').style.display = 'none';
+    document.getElementById('btn-ser-dos').style.display = 'none';
+    document.getElementById('btn-ser-disk').style.display = 'none';
+  }
+  if (!navigator.usb) {
+    document.getElementById('btn-webusb').style.display = 'none';
+  }
+
+  updateUI();
+})();
+</script>
+</body>
+</html>
