@@ -273,3 +273,212 @@ exit:
 
     .ltorg
     .size gpio_hidos_loop, . - gpio_hidos_loop
+
+// ---------------------------------------------------------------------------
+// 80C88 / 8088 variant: 8-bit data bus (AD0-7 only; A8-15 are output-only on
+// the CPU and must never be driven by the Pico), IO/M# polarity inverted
+// (HIGH = I/O, LOW = Memory), no BHE#, and 16-bit HIDOS I/O split across
+// port 86h/87h (OUT 86h, AX) and port 88h/89h (IN AX, 88h).
+// ---------------------------------------------------------------------------
+    .section .time_critical.gpio_hidos_loop_8088, "ax"
+    .global gpio_hidos_loop_8088
+    .type gpio_hidos_loop_8088, %function
+    .thumb_func
+gpio_hidos_loop_8088:
+    push {r4-r7, lr}
+    mov r4, r8
+    mov r5, r9
+    mov r6, r10
+    mov r7, r11
+    push {r4-r7}
+    mov r4, r12
+    push {r0, r4}               // ctx at [sp], r12 at [sp, #4]
+    sub sp, #(N_LOOPS * 4)
+
+    // loops[] -> stack
+    mov r1, sp
+    ldmia r0!, {r2-r7}
+    stmia r1!, {r2-r7}
+    ldmia r0!, {r2-r7}
+    stmia r1!, {r2-r7}
+    // ram, stop, io_running, io_value, ram_size
+    ldmia r0!, {r2-r6}
+    mov r10, r3
+    mov r11, r4
+    mov r12, r5
+    mov lr, r6
+    movs r5, r2
+    movs r0, #0
+    mov r8, r0
+    mov r9, r0
+    movs r0, #0xd0
+    lsls r0, r0, #24
+    movs r1, #1
+    lsls r1, r1, #21
+    movs r7, #0xFF              // AD0-7 mask only (never drive A8-15)
+
+// ---- T1 / Ti low: W=12, then sample pins.
+t1_88:
+    str r1, [r0, #SIO_CLR]
+    mov r6, r8
+    adds r6, #1
+    mov r8, r6
+    mov r6, r10
+    ldrb r6, [r6]
+    cmp r6, #0
+    bne 9f
+    nop                         // 60ns = 15 clocks at 250MHz with one spin
+    SPIN S_T1L
+    ldr r2, [r0, #SIO_IN]
+// ---- T1 high: W=5 (bus cycle) / W=7 (idle clock). Start the address.
+    str r1, [r0, #SIO_SET]
+    lsls r6, r2, #15            // ALE -> N
+    bpl idle_88
+    uxth r3, r2
+    SPIN S_T1H
+// ---- T2 low: W=5. RD/WR go low; r3 = full 20-bit address.
+    str r1, [r0, #SIO_CLR]
+    lsrs r4, r2, #26            // A16-A19 (GP26-29) -> bits 0-3
+    lsls r4, r4, #16
+    adds r3, r4
+    SPIN S_T2L
+// ---- T2 high: W=8. Fetch the read byte.
+    str r1, [r0, #SIO_SET]
+    lsls r6, r2, #12            // IO/M# -> N, set = I/O on 8088
+    bmi t2h_io_88
+    cmp r3, lr
+    bhs t2h_ext_88
+    ldrb r4, [r5, r3]
+t2h_spin_88:
+    SPIN S_T2H
+// ---- T3 low: W=7. Sample RD/WR, put read byte on AD0-7.
+    str r1, [r0, #SIO_CLR]
+    SPIN S_T3L
+    ldr r6, [r0, #SIO_IN]
+    lsls r6, r6, #14            // RD# -> N, WR# -> C
+    bmi t3_not_read_88
+    str r4, [r0, #SIO_OUT]      // CLK stays low, RESET low
+    str r7, [r0, #SIO_OE_SET]   // drive GP0-7 only
+// ---- T3 high (read): W=5. Data setup before T4.
+    str r1, [r0, #SIO_SET]
+    mov r6, r9
+    adds r6, #1
+    mov r9, r6
+t3h_rd_spin_88:
+    SPIN S_T3H_RD
+// ---- T4 low: W=3. Release AD0-7 right at the edge.
+t4_88:
+    str r1, [r0, #SIO_CLR]
+    str r7, [r0, #SIO_OE_CLR]
+    SPIN S_T4L
+// ---- T4 high: W=4.
+    str r1, [r0, #SIO_SET]
+    SPIN S_T4H
+    b t1_88
+
+// ---- T1 high, no ALE: idle clock.
+idle_88:
+    SPIN S_IDLEH
+    b t1_88
+9:  b exit_stop_88              // (in reach of the T1 low check)
+
+// ---- T2 high, I/O read: IN 88h -> io_running, IN 89h -> 0, others 0FFh.
+t2h_io_88:
+    uxth r4, r2
+    cmp r4, #0x88
+    beq 2f
+    cmp r4, #0x89
+    beq 3f
+    movs r4, r7
+    b t2h_spin_88
+2:  mov r4, r11
+    ldrb r4, [r4]
+    b t2h_spin_88
+3:  movs r4, #0
+    b t2h_spin_88
+
+// ---- T2 high, memory above the RAM: ROM (FFFF0h-FFFFFh) or nothing.
+// Point r3 at the dummy slot so that a write is dropped.
+t2h_ext_88:
+    lsrs r6, r3, #4
+    adds r6, #1
+    lsrs r6, r6, #16            // 1 iff r3 in FFFF0h..FFFFFh
+    beq 1f
+    movs r6, #0xF
+    ands r6, r3
+    add r6, lr                  // ROM copy right after the RAM
+    ldrb r4, [r5, r6]
+    b 2f
+1:  movs r4, r7
+2:  mov r3, lr
+    adds r3, #16
+    b t2h_spin_88
+
+// ---- T3 low, not a read: write or HLT. r6 = pins << 14, so C = WR#.
+t3_not_read_88:
+    bcs exit_halt_88
+// ---- T3 high (write): W=7. The data stays valid until T4 ends.
+    str r1, [r0, #SIO_SET]
+    lsrs r4, r6, #14
+    uxtb r4, r4
+    lsls r6, r2, #12            // IO/M# -> N, set = I/O on 8088
+    bmi t3h_io_88
+    nop
+    SPIN S_T3H_WR
+// ---- T4 low (write): W=4. Commit the byte write.
+    str r1, [r0, #SIO_CLR]
+    strb r4, [r5, r3]
+    SPIN S_T4L_WR
+// ---- T4 high (write): W=7.
+    str r1, [r0, #SIO_SET]
+    mov r6, r9
+    adds r6, #1
+    mov r9, r6
+    SPIN S_T4H_WR
+    b t1_88
+
+// ---- T3 high, I/O write: OUT 86h stores low byte of io_value; OUT 87h stores
+// high byte and hands the request to core 0, then the plain T4.
+t3h_io_88:
+    uxth r6, r2
+    cmp r6, #0x86
+    beq 6f
+    cmp r6, #0x87
+    bne 5f
+    mov r6, r12
+    strb r4, [r6, #1]
+    dmb
+    mov r6, r11
+    movs r4, #1
+    strb r4, [r6]
+    b 5f
+6:  mov r6, r12
+    strb r4, [r6, #0]
+5:  mov r6, r9
+    adds r6, #1
+    mov r9, r6
+    b t3h_rd_spin_88
+
+exit_halt_88:
+    movs r0, #EXIT_HALT
+    b exit_88
+exit_stop_88:
+    movs r0, #EXIT_STOP
+exit_88:
+    ldr r1, [sp, #S_CTX]
+    mov r2, r8
+    mov r3, r9
+    str r2, [r1, #(N_LOOPS + 5) * 4]  // t1_clocks
+    str r3, [r1, #(N_LOOPS + 6) * 4]  // bus_cycles
+    add sp, #(N_LOOPS * 4)
+    pop {r1, r4}
+    mov r12, r4
+    pop {r4-r7}
+    mov r8, r4
+    mov r9, r5
+    mov r10, r6
+    mov r11, r7
+    pop {r4-r7, pc}
+
+    .ltorg
+    .size gpio_hidos_loop_8088, . - gpio_hidos_loop_8088

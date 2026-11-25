@@ -56,7 +56,7 @@ struct __attribute__((packed)) BusLog {
   uint32_t address; // 4 bytes
   uint16_t data;    // 2 bytes
   uint8_t type;     // See LogType. 0 is unused.
-  uint8_t ctrl;     // control signals. bit 0 for BHE status (1=low, 0=high)
+  uint8_t ctrl;     // bit 0: BHE# low (V30/8086), bit 1: 8-bit bus (80C88/8088)
 };
 
 // --- Globals ---
@@ -107,12 +107,16 @@ volatile ClockMode clock_mode = CLOCK_GPIO;
 //   high: CLK high (also the read data setup time before T4)
 // The HIDOS engine (gpio_hidos.S) makes each phase just that long. The C
 // engine (logging modes) adds them to its own time, so it is slower.
-#define GPIO_DEFAULT_ADDR_NS 72
-#define GPIO_DEFAULT_LOW_NS 44
-#define GPIO_DEFAULT_HIGH_NS 40
+#define GPIO_DEFAULT_ADDR_NS 72u
+#define GPIO_DEFAULT_LOW_NS 44u
+#define GPIO_DEFAULT_HIGH_NS 40u
+#define GPIO_DEFAULT_8088_ADDR_NS 80u
+#define GPIO_DEFAULT_8088_LOW_NS 60u
+#define GPIO_DEFAULT_8088_HIGH_NS 60u
 static uint32_t gpio_addr_ns = GPIO_DEFAULT_ADDR_NS;
 static uint32_t gpio_low_ns = GPIO_DEFAULT_LOW_NS;
 static uint32_t gpio_high_ns = GPIO_DEFAULT_HIGH_NS;
+static bool gpio_clock_custom = false;
 // The same in spin() loops (3 sys clocks each).
 volatile uint32_t gpio_addr_loops, gpio_low_loops, gpio_high_loops;
 
@@ -131,9 +135,29 @@ struct GpioAsmCtx {
   uint32_t bus_cycles; // out
 };
 extern "C" int gpio_hidos_loop(GpioAsmCtx *ctx);
+extern "C" int gpio_hidos_loop_8088(GpioAsmCtx *ctx);
 // Sys clocks of each phase's own instructions ("W=" in gpio_hidos.S).
 const uint8_t gpio_asm_work[GA_PHASES] = {12, 7, 7, 5, 8, 7, 5, 7, 3, 8, 4, 7};
+const uint8_t gpio_asm_work_8088[GA_PHASES] = {12, 5, 7, 5, 8, 7, 5, 7, 3, 4, 4, 7};
 GpioAsmCtx gpio_asm_ctx;
+GpioAsmCtx gpio_asm_ctx_8088;
+
+// CPU selection: AUTO probes Pin 28 (M/IO# vs IO/M#) on the first T1 after
+// reset while keeping the data bus Hi-Z (zero bus contention).
+enum CpuMode { CPU_AUTO, CPU_V30, CPU_8088 };
+volatile CpuMode cpu_mode = CPU_AUTO;
+volatile bool cpu_is_8088 = false;
+volatile bool cpu_detected = false;
+
+const char *cpu_name_str() {
+  if (cpu_mode == CPU_V30)
+    return "V30/8086 (forced)";
+  if (cpu_mode == CPU_8088)
+    return "80C88/8088 (forced)";
+  if (!cpu_detected)
+    return "unknown (auto, safe 8-bit)";
+  return cpu_is_8088 ? "80C88/8088 (auto)" : "V30/8086 (auto)";
+}
 
 // --- XMODEM Constants ---
 #define SOH 0x01
@@ -147,20 +171,20 @@ GpioAsmCtx gpio_asm_ctx;
 // ==========================================
 
 /**
- * @brief V30のアドレス/データバス(AD0-15)の方向を設定します。
- * @param output trueの場合は出力、falseの場合は入力に設定します。
- * @return なし
+ * @brief CPUのアドレス/データバスの方向を設定します。
+ * 80C88 (8bit) の場合は GP0-7 (AD0-7) のみ出力にし、GP8-15 (A8-15) は常に Hi-Z
+ * を維持します。
  */
-__force_inline void set_ad_dir(bool output) {
-  uint32_t mask = (1 << 16) - 1; // Mask for GP0-15
+__force_inline void set_ad_dir(bool output, bool is_8088 = false) {
+  uint32_t mask = is_8088 ? 0x00FFu : 0xFFFFu;
   if (output)
     sio_hw->gpio_oe_set = mask;
   else
-    sio_hw->gpio_oe_clr = mask;
+    sio_hw->gpio_oe_clr = 0xFFFFu;
 }
 
 /**
- * @brief V30バスからアドレス(A0-A19)を読み取ります。
+ * @brief CPUバスからアドレス(A0-A19)を読み取ります。
  * @param なし
  * @return 読み取った20ビットのアドレス
  */
@@ -173,21 +197,20 @@ __force_inline uint32_t read_addr() {
 }
 
 /**
- * @brief V30のデータバス(AD0-15)に16ビットのデータを書き込みます。
- * @param d 書き込む16ビットデータ
- * @return なし
+ * @brief CPUのデータバスにデータを書き込みます (V30=16bit, 80C88=8bit)。
  */
-__force_inline void write_data(uint16_t d) {
-  sio_hw->gpio_set = d;
-  sio_hw->gpio_clr = (~d) & 0xFFFF;
+__force_inline void write_data(uint16_t d, bool is_8088 = false) {
+  uint32_t mask = is_8088 ? 0x00FFu : 0xFFFFu;
+  sio_hw->gpio_set = d & mask;
+  sio_hw->gpio_clr = (~d) & mask;
 }
 
 /**
- * @brief V30のデータバス(AD0-15)から16ビットのデータを読み取ります。
- * @param なし
- * @return 読み取った16ビットデータ
+ * @brief CPUのデータバスからデータを読み取ります (V30=16bit, 80C88=8bit)。
  */
-__force_inline uint16_t read_data() { return sio_hw->gpio_in & 0xFFFF; }
+__force_inline uint16_t read_data(bool is_8088 = false) {
+  return sio_hw->gpio_in & (is_8088 ? 0x00FFu : 0xFFFFu);
+}
 
 /**
  * @brief V30の20ビットアドレスを、Pico上の64KB
@@ -281,10 +304,21 @@ void setup_gpio_clock(uint32_t addr_ns, uint32_t low_ns, uint32_t high_ns) {
                      i == GA_T4L_WR)
                       ? low_ns
                       : high_ns;
-    int32_t rest = (int32_t)(ns * sys_mhz / 1000) - gpio_asm_work[i];
-    gpio_asm_ctx.loops[i] = rest > 3 ? (rest + 2) / 3 : 1;
+    int32_t rest_v30 = (int32_t)(ns * sys_mhz / 1000) - gpio_asm_work[i];
+    gpio_asm_ctx.loops[i] = rest_v30 > 3 ? (rest_v30 + 2) / 3 : 1;
+    int32_t rest_88 = (int32_t)(ns * sys_mhz / 1000) - gpio_asm_work_8088[i];
+    gpio_asm_ctx_8088.loops[i] = rest_88 > 3 ? (rest_88 + 2) / 3 : 1;
   }
   clock_mode = CLOCK_GPIO;
+}
+
+void apply_default_gpio_clock() {
+  if (cpu_is_8088)
+    setup_gpio_clock(GPIO_DEFAULT_8088_ADDR_NS, GPIO_DEFAULT_8088_LOW_NS,
+                     GPIO_DEFAULT_8088_HIGH_NS);
+  else
+    setup_gpio_clock(GPIO_DEFAULT_ADDR_NS, GPIO_DEFAULT_LOW_NS,
+                     GPIO_DEFAULT_HIGH_NS);
 }
 
 void print_clock_status() {
@@ -307,6 +341,7 @@ void print_clock_status() {
 #define CMD_RUN_IOLOG 3   // Run with I/O logging only.
 #define CMD_RUN_COMLOG 4   // Run with COM2 port logging only.
 #define CMD_RUN_HIDOSVM 5   // Run hidos.
+#define CMD_PROBE_CPU 6     // Probe V30 vs 80C88 without driving AD bus.
 
 enum BusMode { BUS_NOLOG, BUS_IOLOG, BUS_FULLLOG, BUS_COMLOG, BUS_HIDOS };
 
@@ -396,8 +431,61 @@ __force_inline void gpio_reset_cpu() {
   sio_hw->gpio_clr = 1u << PIN_RESET;
 }
 
+// Probe whether the installed CPU is V30/8086 or 80C88/8088 without ever
+// driving the AD bus. On the first T1 after reset (code fetch from FFFF0h),
+// Pin 28 (GP19) is HIGH on V30/8086 (M/IO#) and LOW on 80C88/8088 (IO/M#).
+void __not_in_flash_func(probe_cpu)() {
+  sio_hw->gpio_oe_clr = 0xFFFFu;
+  bool found = false;
+  uint32_t pins = 0;
+
+  if (clock_mode == CLOCK_GPIO) {
+    const uint32_t clk = 1u << PIN_CLK_OUT;
+    // Use relaxed ~33% duty clocks so both V30 and slower 80C88 parts respond.
+    const uint32_t low_l = gpio_addr_loops + 40;
+    const uint32_t high_l = gpio_high_loops + 20;
+    gpio_reset_cpu();
+    for (int i = 0; i < 64; i++) {
+      sio_hw->gpio_clr = clk;
+      spin(low_l);
+      pins = sio_hw->gpio_in;
+      sio_hw->gpio_set = clk;
+      if (pins & (1u << PIN_ALE)) {
+        found = true;
+        break;
+      }
+      spin(high_l);
+    }
+    sio_hw->gpio_set = 1u << PIN_RESET;
+  } else {
+    gpio_put(PIN_RESET, 1);
+    sleep_ms(1);
+    gpio_put(PIN_RESET, 0);
+    absolute_time_t t0 = get_absolute_time();
+    while (absolute_time_diff_us(t0, get_absolute_time()) < 100000) {
+      pins = sio_hw->gpio_in;
+      if (pins & (1u << PIN_ALE)) {
+        found = true;
+        break;
+      }
+    }
+    gpio_put(PIN_RESET, 1);
+  }
+
+  if (found) {
+    cpu_is_8088 = !(pins & (1u << PIN_IOM));
+    cpu_detected = true;
+  } else {
+    // Fail safe: never drive GP8-15 (A8-15) if no CPU responded.
+    cpu_is_8088 = true;
+    cpu_detected = false;
+  }
+}
+
 __force_inline void gpio_bus_run(const int mode) {
+  const bool is_8088 = cpu_is_8088;
   const uint32_t clk = 1u << PIN_CLK_OUT;
+  const uint32_t data_mask = is_8088 ? 0x00FFu : 0xFFFFu;
   const uint32_t la = gpio_addr_loops;
   const uint32_t ll = gpio_low_loops;
   const uint32_t lh = gpio_high_loops;
@@ -434,16 +522,19 @@ __force_inline void gpio_bus_run(const int mode) {
     }
     idle_clocks += idle;
     const uint32_t addr = (pins & 0xFFFF) | ((pins >> (PIN_A16 - 16)) & 0xF0000);
-    const bool is_io = !(pins & (1u << PIN_IOM));
-    const bool bhe_low = !(pins & (1u << PIN_BHE));
+    const bool is_io =
+        is_8088 ? ((pins & (1u << PIN_IOM)) != 0) : !(pins & (1u << PIN_IOM));
+    const bool bhe_low = is_8088 ? false : !(pins & (1u << PIN_BHE));
     uint16_t *const word = (uint16_t *)&ram[map_address(addr & ~1u)];
     uint32_t data;
     if (!is_io)
-      data = *word;
+      data = is_8088 ? ram[map_address(addr)] : *word;
     else if (mode == BUS_HIDOS && addr == 0x88)
       data = io_running;
+    else if (is_8088 && mode == BUS_HIDOS && addr == 0x89)
+      data = 0;
     else
-      data = 0xFFFF;
+      data = data_mask;
 
     // T2
     sio_hw->gpio_clr = clk;
@@ -457,25 +548,39 @@ __force_inline void gpio_bus_run(const int mode) {
     pins = sio_hw->gpio_in;
     const bool is_read = !(pins & (1u << PIN_RD));
     if (is_read) {
-      // Drive in T3 (not as soon as RD falls in T2) so the V30 has a full
-      // clock to float AD0-15. CLK rises together with the data.
-      sio_hw->gpio_oe_set = 0xFFFF;
+      // Drive in T3 (not as soon as RD falls in T2) so the CPU has a full
+      // clock to float AD0-15 (or AD0-7 on 80C88). CLK rises with the data.
+      sio_hw->gpio_oe_set = data_mask;
       sio_hw->gpio_out = data | clk;
       spin(lh);
     } else if (!(pins & (1u << PIN_WR))) {
       sio_hw->gpio_set = clk;
-      data = pins & 0xFFFF;
+      data = pins & data_mask;
       if (!is_io) {
-        if (bhe_low && !(addr & 1)) // Word Write to even address
-          *word = data;
-        else if (bhe_low) // High Byte Write to odd address
-          ram[map_address(addr)] = data >> 8;
-        else if (!(addr & 1)) // Low Byte Write to even address
-          ram[map_address(addr)] = data & 0xFF;
-      } else if (mode == BUS_HIDOS && addr == 0x86) {
-        io_value = data;
-        __dmb();
-        io_running = 1;
+        if (is_8088) {
+          ram[map_address(addr)] = (uint8_t)data;
+        } else {
+          if (bhe_low && !(addr & 1)) // Word Write to even address
+            *word = data;
+          else if (bhe_low) // High Byte Write to odd address
+            ram[map_address(addr)] = data >> 8;
+          else if (!(addr & 1)) // Low Byte Write to even address
+            ram[map_address(addr)] = data & 0xFF;
+        }
+      } else if (mode == BUS_HIDOS) {
+        if (is_8088) {
+          if (addr == 0x86) {
+            io_value = (io_value & 0xFF00u) | (data & 0xFFu);
+          } else if (addr == 0x87) {
+            io_value = (io_value & 0x00FFu) | ((data & 0xFFu) << 8);
+            __dmb();
+            io_running = 1;
+          }
+        } else if (addr == 0x86) {
+          io_value = data;
+          __dmb();
+          io_running = 1;
+        }
       }
       spin(lh);
     } else {
@@ -485,7 +590,7 @@ __force_inline void gpio_bus_run(const int mode) {
 
     // T4
     sio_hw->gpio_clr = clk;
-    sio_hw->gpio_oe_clr = 0xFFFF;
+    sio_hw->gpio_oe_clr = data_mask;
     spin(ll);
     sio_hw->gpio_set = clk;
     bus_cycles++;
@@ -493,7 +598,8 @@ __force_inline void gpio_bus_run(const int mode) {
         should_log(mode, is_io, addr)) {
       uint8_t type = is_io ? (is_read ? LOG_IO_RD : LOG_IO_WR)
                            : (is_read ? LOG_MEM_RD : LOG_MEM_WR);
-      trace_log[logged++] = {addr, (uint16_t)data, type, (uint8_t)bhe_low};
+      uint8_t ctrl = is_8088 ? 2 : (uint8_t)bhe_low;
+      trace_log[logged++] = {addr, (uint16_t)data, type, ctrl};
       if (logged >= MAX_CYCLES) {
         exit_code = EXIT_LOG_FULL;
         goto out;
@@ -510,7 +616,7 @@ __force_inline void gpio_bus_run(const int mode) {
 out:
   uint64_t end = time_us_64();
 
-  sio_hw->gpio_oe_clr = 0xFFFF;
+  sio_hw->gpio_oe_clr = 0xFFFFu;
   sio_hw->gpio_set = 1u << PIN_RESET;
 
   execution_time_us = (int)(end - start);
@@ -527,7 +633,8 @@ void __not_in_flash_func(gpio_run_comlog)() { gpio_bus_run(BUS_COMLOG); }
 // HIDOS mode runs the hand-written engine in gpio_hidos.S (no logging, no
 // cycle limit, no idle timeout: 's' stops it).
 void __not_in_flash_func(gpio_run_hidos)() {
-  GpioAsmCtx &ctx = gpio_asm_ctx;
+  const bool is_8088 = cpu_is_8088;
+  GpioAsmCtx &ctx = is_8088 ? gpio_asm_ctx_8088 : gpio_asm_ctx;
   ctx.ram = ram;
   ctx.stop = &stop_request;
   ctx.io_running = &io_running;
@@ -535,9 +642,10 @@ void __not_in_flash_func(gpio_run_hidos)() {
   ctx.ram_size = RAM_SIZE;
   gpio_reset_cpu();
   uint64_t start = time_us_64();
-  int exit_code = gpio_hidos_loop(&ctx);
+  int exit_code =
+      is_8088 ? gpio_hidos_loop_8088(&ctx) : gpio_hidos_loop(&ctx);
   uint64_t end = time_us_64();
-  sio_hw->gpio_oe_clr = 0xFFFF;
+  sio_hw->gpio_oe_clr = 0xFFFFu;
   sio_hw->gpio_set = 1u << PIN_RESET;
 
   // The last T1 count may be a stop check, not a clock: off by one at most.
@@ -613,8 +721,10 @@ void pwm_bus_run(uint32_t command) {
       break; // V30 inactive
     }
 
+    const bool is_8088 = cpu_is_8088;
     uint32_t addr = read_addr();
-    bool is_io = !(sio_hw->gpio_in & (1 << PIN_IOM));
+    bool is_io = is_8088 ? ((sio_hw->gpio_in & (1 << PIN_IOM)) != 0)
+                         : !(sio_hw->gpio_in & (1 << PIN_IOM));
 
     // Wait for ALE to go low (no timeout requested here)
     while (sio_hw->gpio_in & (1 << PIN_ALE))
@@ -635,21 +745,25 @@ void pwm_bus_run(uint32_t command) {
 
       if (!(pins & (1 << PIN_RD))) {
         sleep_us(3); // これが無いとショートしてデバイスが落ちる。
-        set_ad_dir(true);
-        uint16_t out_data = 0xFFFF;
+        set_ad_dir(true, is_8088);
+        uint16_t out_data = is_8088 ? 0x00FF : 0xFFFF;
         if (!is_io) {
-          // Optimized read: Always read the word-aligned data.
-          // The CPU will select the correct byte (or word) based on A0 and
-          // BHE#.
-          uint32_t aligned_v30_addr = addr & ~1;
-          out_data = ram[map_address(aligned_v30_addr)] |
-                     (ram[map_address(aligned_v30_addr + 1)] << 8);
+          if (is_8088) {
+            out_data = ram[map_address(addr)];
+          } else {
+            // Optimized read: Always read the word-aligned data.
+            // The CPU will select the correct byte (or word) based on A0 and
+            // BHE#.
+            uint32_t aligned_v30_addr = addr & ~1;
+            out_data = ram[map_address(aligned_v30_addr)] |
+                       (ram[map_address(aligned_v30_addr + 1)] << 8);
+          }
         }
-        write_data(out_data);
+        write_data(out_data, is_8088);
 
         if (mode != BUS_NOLOG && should_log(mode, is_io, addr)) {
           uint8_t ctrl_flags =
-              (pins & (1u << PIN_BHE)) ? 0 : 1; // 1 if BHE is low
+              is_8088 ? 2 : ((pins & (1u << PIN_BHE)) ? 0 : 1);
           trace_log[logged_cycles] = {
               addr, out_data, (uint8_t)(is_io ? LOG_IO_RD : LOG_MEM_RD),
               ctrl_flags};
@@ -665,26 +779,30 @@ void pwm_bus_run(uint32_t command) {
         // Wait for WR to go high (no timeout requested here)
         while (!(sio_hw->gpio_in & (1 << PIN_WR)))
           ;
-        uint16_t in_data = read_data();
+        uint16_t in_data = read_data(is_8088);
 
         if (!is_io) {
-          bool bhe_low = !(pins & (1u << PIN_BHE));
-          bool a0_low = !(addr & 1);
+          if (is_8088) {
+            ram[map_address(addr)] = in_data & 0xFF;
+          } else {
+            bool bhe_low = !(pins & (1u << PIN_BHE));
+            bool a0_low = !(addr & 1);
 
-          if (bhe_low && a0_low) { // Word Write to even address
-            ram[map_address(addr)] = in_data & 0xFF;
-            ram[map_address(addr + 1)] = in_data >> 8;
-          } else if (bhe_low && !a0_low) { // High Byte Write to odd address
-            ram[map_address(addr)] = in_data >> 8;
-          } else if (!bhe_low && a0_low) { // Low Byte Write to even address
-            ram[map_address(addr)] = in_data & 0xFF;
+            if (bhe_low && a0_low) { // Word Write to even address
+              ram[map_address(addr)] = in_data & 0xFF;
+              ram[map_address(addr + 1)] = in_data >> 8;
+            } else if (bhe_low && !a0_low) { // High Byte Write to odd address
+              ram[map_address(addr)] = in_data >> 8;
+            } else if (!bhe_low && a0_low) { // Low Byte Write to even address
+              ram[map_address(addr)] = in_data & 0xFF;
+            }
+            // For invalid case (BHE high, A0 high), nothing is written.
           }
-          // For invalid case (BHE high, A0 high), nothing is written.
         }
 
         if (mode != BUS_NOLOG && should_log(mode, is_io, addr)) {
           uint8_t ctrl_flags =
-              (pins & (1u << PIN_BHE)) ? 0 : 1; // 1 if BHE is low
+              is_8088 ? 2 : ((pins & (1u << PIN_BHE)) ? 0 : 1);
           trace_log[logged_cycles] = {
               addr, in_data, (uint8_t)(is_io ? LOG_IO_WR : LOG_MEM_WR),
               ctrl_flags};
@@ -744,8 +862,10 @@ void __not_in_flash_func(pwm_hidos_cpu)() {
       break;
     }
 
+    const bool is_8088 = cpu_is_8088;
     uint32_t addr = read_addr();
-    bool is_io = !(sio_hw->gpio_in & (1 << PIN_IOM));
+    bool is_io = is_8088 ? ((sio_hw->gpio_in & (1 << PIN_IOM)) != 0)
+                         : !(sio_hw->gpio_in & (1 << PIN_IOM));
 
     // Wait for ALE to go low (no timeout requested here)
     while (sio_hw->gpio_in & (1 << PIN_ALE))
@@ -764,16 +884,22 @@ void __not_in_flash_func(pwm_hidos_cpu)() {
 
       if (!(pins & (1 << PIN_RD))) {
         tiny_delay(); // これが無いとショートしてデバイスが落ちる。
-        set_ad_dir(true);
-        uint16_t out_data = 0xFFFF;
+        set_ad_dir(true, is_8088);
+        uint16_t out_data = is_8088 ? 0x00FF : 0xFFFF;
         if (!is_io) {
-          uint32_t aligned_v30_addr = addr & ~1;
-          out_data = ram[v30_map(aligned_v30_addr)] |
-            (ram[v30_map(aligned_v30_addr + 1)] << 8);
-        } else if (is_io && addr == 0x88) {
+          if (is_8088) {
+            out_data = ram[v30_map(addr)];
+          } else {
+            uint32_t aligned_v30_addr = addr & ~1;
+            out_data = ram[v30_map(aligned_v30_addr)] |
+              (ram[v30_map(aligned_v30_addr + 1)] << 8);
+          }
+        } else if (addr == 0x88) {
           out_data = io_running;
+        } else if (is_8088 && addr == 0x89) {
+          out_data = 0;
         }
-        write_data(out_data);
+        write_data(out_data, is_8088);
 
         // Wait for RD to go high (no timeout requested here)
         while (!(sio_hw->gpio_in & (1 << PIN_RD)))
@@ -782,25 +908,37 @@ void __not_in_flash_func(pwm_hidos_cpu)() {
         done_bus_cycle_op = true;
       } else if (!(pins & (1 << PIN_WR))) {
         tiny_delay();
-        uint16_t in_data = read_data();
+        uint16_t in_data = read_data(is_8088);
         // Wait for WR to go high (no timeout requested here)
         while (!(sio_hw->gpio_in & (1 << PIN_WR)))
           ;
 
         if (!is_io) {
-          bool bhe_low = !(pins & (1u << PIN_BHE));
-          bool a0_low = !(addr & 1);
+          if (is_8088) {
+            ram[v30_map(addr)] = in_data & 0xFF;
+          } else {
+            bool bhe_low = !(pins & (1u << PIN_BHE));
+            bool a0_low = !(addr & 1);
 
-          if (bhe_low && a0_low) { // Word Write to even address
-            ram[v30_map(addr)] = in_data & 0xFF;
-            ram[v30_map(addr + 1)] = in_data >> 8;
-          } else if (bhe_low && !a0_low) { // High Byte Write to odd address
-            ram[v30_map(addr)] = in_data >> 8;
-          } else if (!bhe_low && a0_low) { // Low Byte Write to even address
-            ram[v30_map(addr)] = in_data & 0xFF;
+            if (bhe_low && a0_low) { // Word Write to even address
+              ram[v30_map(addr)] = in_data & 0xFF;
+              ram[v30_map(addr + 1)] = in_data >> 8;
+            } else if (bhe_low && !a0_low) { // High Byte Write to odd address
+              ram[v30_map(addr)] = in_data >> 8;
+            } else if (!bhe_low && a0_low) { // Low Byte Write to even address
+              ram[v30_map(addr)] = in_data & 0xFF;
+            }
+            // For invalid case (BHE high, A0 high), nothing is written.
           }
-          // For invalid case (BHE high, A0 high), nothing is written.
-        } else if (is_io && addr == 0x86) {
+        } else if (is_8088) {
+          if (addr == 0x86) {
+            io_value = (io_value & 0xFF00u) | (in_data & 0xFFu);
+          } else if (addr == 0x87) {
+            io_value = (io_value & 0x00FFu) | ((in_data & 0xFFu) << 8);
+            __dmb();
+            io_running = 1;
+          }
+        } else if (addr == 0x86) {
           io_value = in_data;
           __dmb();
           io_running = 1;
@@ -849,9 +987,20 @@ void core1_entry() {
 
   while (true) {
     uint32_t command = multicore_fifo_pop_blocking();
+    if (command == CMD_PROBE_CPU) {
+      probe_cpu();
+      multicore_fifo_push_blocking(1);
+      continue;
+    }
+
     stop_request = false;
     core1_exit = EXIT_STOP;
     executed_clocks = 0;
+
+    if (cpu_mode == CPU_AUTO)
+      probe_cpu();
+    else
+      cpu_is_8088 = (cpu_mode == CPU_8088);
 
     if (clock_mode == CLOCK_GPIO) {
       switch (command) {
@@ -2105,6 +2254,11 @@ int main() {
   memset(ram, 0xF4, RAM_SIZE); // Default to HLT
   multicore_launch_core1(core1_entry);
 
+  // Probe CPU once on boot and select the matching default GPIO clock.
+  multicore_fifo_push_blocking(CMD_PROBE_CPU);
+  wait_core1();
+  apply_default_gpio_clock();
+
   char line[128], *argv[16];
   printf("\n\n=== V30 Monitor v%s ===\nType '?' for help.\n", VERSION_STR);
 
@@ -2145,7 +2299,8 @@ int main() {
     if (hidos_active &&
         (strcmp(cmd, "r") == 0 || strcmp(cmd, "i") == 0 ||
          strcmp(cmd, "g") == 0 || strcmp(cmd, "c") == 0 ||
-         strcmp(cmd, "h") == 0 || strcmp(cmd, "autotest") == 0)) {
+         strcmp(cmd, "cpu") == 0 || strcmp(cmd, "h") == 0 ||
+         strcmp(cmd, "autotest") == 0)) {
       printf("HIDOS VM is running. Stop it with 's' first.\n");
       continue;
     }
@@ -2168,6 +2323,7 @@ int main() {
       printf(" c <kHz>        : PWM clock at fixed frequency\n");
       printf(" c s <MHz>      : Pico system clock (default %d)\n",
              DEFAULT_SYS_MHZ);
+      printf(" cpu [auto|v30|8088] : Show/probe or force CPU type\n");
       printf(" xr/xs          : XMODEM Recv/Send RAM\n");
       printf(" xl             : XMODEM Send Log\n");
       printf(" v              : Version\n");
@@ -2178,6 +2334,40 @@ int main() {
              "2=error)\n");
       printf(" s              : Stop HIDOS VM\n");
       printf("USB ports: 0=monitor 1=DOS console 2=DOS AUX 3=disk server\n");
+    } else if (strcmp(cmd, "cpu") == 0) {
+      const char *a = args;
+      while (*a && isspace((unsigned char)*a))
+        a++;
+      if (*a == 0) {
+        if (cpu_mode == CPU_AUTO) {
+          multicore_fifo_push_blocking(CMD_PROBE_CPU);
+          wait_core1();
+          if (!gpio_clock_custom && clock_mode == CLOCK_GPIO)
+            apply_default_gpio_clock();
+        }
+        printf("CPU: %s\n", cpu_name_str());
+      } else if (strcmp(a, "auto") == 0) {
+        cpu_mode = CPU_AUTO;
+        multicore_fifo_push_blocking(CMD_PROBE_CPU);
+        wait_core1();
+        if (!gpio_clock_custom && clock_mode == CLOCK_GPIO)
+          apply_default_gpio_clock();
+        printf("CPU: %s\n", cpu_name_str());
+      } else if (strcmp(a, "v30") == 0 || strcmp(a, "8086") == 0) {
+        cpu_mode = CPU_V30;
+        cpu_is_8088 = false;
+        if (!gpio_clock_custom && clock_mode == CLOCK_GPIO)
+          apply_default_gpio_clock();
+        printf("CPU: %s\n", cpu_name_str());
+      } else if (strcmp(a, "8088") == 0 || strcmp(a, "80c88") == 0) {
+        cpu_mode = CPU_8088;
+        cpu_is_8088 = true;
+        if (!gpio_clock_custom && clock_mode == CLOCK_GPIO)
+          apply_default_gpio_clock();
+        printf("CPU: %s\n", cpu_name_str());
+      } else {
+        printf("Usage: cpu [auto|v30|8088]\n");
+      }
     } else if (strcmp(cmd, "k") == 0)
       cmd_load_boot(args);
     else if (strcmp(cmd, "d") == 0)
@@ -2264,25 +2454,31 @@ int main() {
         print_clock_status();
       } else if (args[0] == 'p') {
         // Per-phase override of the HIDOS engine's spin counts (tuning).
+        GpioAsmCtx &ctx = cpu_is_8088 ? gpio_asm_ctx_8088 : gpio_asm_ctx;
         char *q;
         uint32_t ph = strtoul(args + 1, &q, 10);
         uint32_t n = strtoul(q, NULL, 10);
         if (ph < GA_PHASES && n > 0)
-          gpio_asm_ctx.loops[ph] = n;
+          ctx.loops[ph] = n;
         for (int i = 0; i < GA_PHASES; i++)
-          printf(" %lu", gpio_asm_ctx.loops[i]);
+          printf(" %lu", ctx.loops[i]);
         printf("\n");
       } else if (args[0] == 'g') {
-        uint32_t v[3] = {GPIO_DEFAULT_ADDR_NS, GPIO_DEFAULT_LOW_NS,
-                         GPIO_DEFAULT_HIGH_NS};
+        uint32_t v[3] = {
+            cpu_is_8088 ? GPIO_DEFAULT_8088_ADDR_NS : GPIO_DEFAULT_ADDR_NS,
+            cpu_is_8088 ? GPIO_DEFAULT_8088_LOW_NS : GPIO_DEFAULT_LOW_NS,
+            cpu_is_8088 ? GPIO_DEFAULT_8088_HIGH_NS : GPIO_DEFAULT_HIGH_NS};
         char *p = (char *)args + 1;
+        int n_args = 0;
         for (int i = 0; i < 3; i++) {
           char *q = p;
           uint32_t n = strtoul(q, &p, 10);
           if (p == q)
             break;
           v[i] = n;
+          n_args++;
         }
+        gpio_clock_custom = (n_args > 0);
         setup_gpio_clock(v[0], v[1], v[2]);
         print_clock_status();
       } else {
@@ -2346,8 +2542,10 @@ int main() {
           const char *types[] = {"RD", "WR", "IR", "IW"};
           // Type is now 1-based (0 is unused)
           if (trace_log[i].type > 0 && trace_log[i].type <= 4) {
-            printf("%05lX|%s|%s|%04X\n", trace_log[i].address,
-                   (trace_log[i].ctrl & 1 ? "B" : "-"),
+            const char *b = (trace_log[i].ctrl & 2)   ? "8"
+                            : (trace_log[i].ctrl & 1) ? "B"
+                                                      : "-";
+            printf("%05lX|%s|%s|%04X\n", trace_log[i].address, b,
                    types[trace_log[i].type - 1], trace_log[i].data);
           }
         }
@@ -2397,8 +2595,10 @@ int main() {
           const char *types[] = {"RD", "WR", "IR", "IW"};
           // Type is now 1-based (0 is unused)
           if (trace_log[i].type > 0 && trace_log[i].type <= 4) {
-            printf("%05lX|%s|%s|%04X\n", trace_log[i].address,
-                   (trace_log[i].ctrl & 1 ? "B" : "-"),
+            const char *b = (trace_log[i].ctrl & 2)   ? "8"
+                            : (trace_log[i].ctrl & 1) ? "B"
+                                                      : "-";
+            printf("%05lX|%s|%s|%04X\n", trace_log[i].address, b,
                    types[trace_log[i].type - 1], trace_log[i].data);
           }
         }
@@ -2433,7 +2633,8 @@ int main() {
         printf("No log data to send.\n");
       }
     } else if (strcmp(cmd, "v") == 0)
-      printf("Ver: %s, RAM: %dKB\n", VERSION_STR, RAM_SIZE / 1024);
+      printf("Ver: %s, RAM: %dKB, CPU: %s\n", VERSION_STR, RAM_SIZE / 1024,
+             cpu_name_str());
     else if (strcmp(cmd, "autotest") == 0) {
       // Trim leading whitespace from args
       const char *args_ptr = args;
@@ -2515,6 +2716,7 @@ int main() {
       printf("  A:         : embedded disk.img (read only)\n");
       printf("  B:         : disk server on USB port 3 %s\n",
              port_connected(PORT_DISK) ? "" : "(not running)");
+      printf("  CPU        : %s\n", cpu_name_str());
       print_clock_status();
       hidos_start(loglevel);
     } else if (strcmp(cmd, "s") == 0) {
