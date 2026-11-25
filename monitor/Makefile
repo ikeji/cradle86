@@ -138,7 +138,7 @@ flash: build/v30_control.uf2
 	@echo "--- Flash complete. ---"
 
 # This target builds the firmware if it is missing or if its sources have changed.
-build/v30_control.uf2: main.cpp usb_ports.c usb_ports.h usb_descriptors.c tusb_config.h CMakeLists.txt ../embedded-hidos/boot.img ../embedded-hidos/disk.img ../embedded-hidos/sanity.asm
+build/v30_control.uf2: main.cpp gpio_hidos.S usb_ports.c usb_ports.h usb_descriptors.c tusb_config.h CMakeLists.txt ../embedded-hidos/boot.img ../embedded-hidos/disk.img ../embedded-hidos/sanity.asm ../embedded-hidos/mandel.asm ../embedded-hidos/life.asm
 	make -C ../embedded-hidos all
 	@echo "--- Firmware not found or source changed, building... ---"
 	mkdir -p build

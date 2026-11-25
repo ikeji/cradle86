@@ -1,7 +1,8 @@
-; SANITY.COM - sanity check for cradle86 running HIDOS on the real V30.
+; SANITY.COM - sanity check for cradle86 running HIDOS (V30 / 80C88 / 8086 / 8088).
 ;
 ; Tests, in order:
-;   CPU     arithmetic, flags, string ops, far call, 80186 instructions (V30)
+;   CPU     detects CPU type (V30/V20/8086/8088/186+), arithmetic, flags,
+;           string ops, far call, and 80186 instructions (when supported)
 ;   Memory  all free conventional memory: solid patterns, then address
 ;           patterns written as words / read as bytes and vice versa
 ;           (checks A0/BHE# handling and address aliasing)
@@ -16,7 +17,7 @@
 ;
 ; Build: nasm -f bin -o SANITY.COM sanity.asm
 
-        cpu     186
+        cpu     8086
         org     100h
 
 %define CRLF 13,10
@@ -49,9 +50,81 @@ start:
 
 ; ---------------------------------------------------------------- CPU
 
+; Detect CPU family (8086/8088 vs 186+/NEC V20/V30) and prefetch queue length
+; (4 bytes = 8-bit bus 8088/V20, 6 bytes = 16-bit bus 8086/V30).
+detect_cpu:
+        ; 1) NEC V20/V30 ignore AAD's immediate operand (always multiply by 10).
+        ;    Note: V20/V30 do NOT mask shift counts by 31 like Intel 186+, so
+        ;    check AAD first, then check shift masking for Intel 186+.
+        mov     byte [cpu_is_nec], 0
+        mov     byte [cpu_has_186], 0
+        mov     ax, 0100h
+        db      0D5h, 00h       ; AAD 00h: NEC V20/V30 -> AL=0Ah, Intel -> AL=00h
+        cmp     al, 0Ah
+        jne     .chk_186
+        mov     byte [cpu_is_nec], 1
+        mov     byte [cpu_has_186], 1
+        jmp     short .queue
+.chk_186:
+        ; 2) Intel 8086/8088 do not mask shift count by 31; 186+ do.
+        mov     al, 1
+        mov     cl, 32
+        shr     al, cl
+        mov     [cpu_has_186], al
+
+.queue: ; 3) Prefetch queue length test (4 bytes vs 6 bytes).
+        ; `mul bx` computes 0x0012 * 0x0008 = 0x0000:0090 (so DX=0, AL=90h=NOP)
+        ; while taking enough clocks for the BIU to fill the prefetch queue:
+        ;   8088/V20 (4B): [stosb][nop][nop][nop] -> .q_target (+5) not queued
+        ;   8086/V30 (6B): [stosb][nop][nop][nop][nop][inc dx] -> queued!
+        push    es
+        push    cs
+        pop     es
+        mov     byte [.q_target], 42h   ; restore `inc dx`
+        mov     di, .q_target
+        mov     ax, 0012h
+        mov     bx, 0008h
+        cli
+        jmp     short .q_go     ; flush queue before mul
+.q_go:  mul     bx              ; DX=0, AL=90h (NOP); fills prefetch queue
+        stosb                   ; +0: overwrite .q_target in RAM with NOP
+        nop                     ; +1
+        nop                     ; +2
+        nop                     ; +3
+        nop                     ; +4
+.q_target:
+        inc     dx              ; +5: executed on 6B queue (8086/V30) only
+        sti
+        mov     byte [.q_target], 42h   ; restore for cleanliness
+        mov     [cpu_is_16bit], dl
+        pop     es
+        ret
+
+print_cpu_name:
+        cmp     byte [cpu_has_186], 0
+        je      .c86
+        cmp     byte [cpu_is_nec], 0
+        je      .c186
+        cmp     byte [cpu_is_16bit], 0
+        je      .v20
+        mov     dx, s_cpu_v30
+        jmp     puts
+.v20:   mov     dx, s_cpu_v20
+        jmp     puts
+.c186:  mov     dx, s_cpu_186
+        jmp     puts
+.c86:   cmp     byte [cpu_is_16bit], 0
+        je      .c88
+        mov     dx, s_cpu_8086
+        jmp     puts
+.c88:   mov     dx, s_cpu_8088
+        jmp     puts
+
 test_cpu:
         mov     dx, s_cpu
         call    puts
+        call    detect_cpu
+        call    print_cpu_name
         mov     byte [step], 1
         mov     ax, 1234h
         mov     bx, 5678h
@@ -112,7 +185,10 @@ test_cpu:
         cmp     ax, 0603h
         jne     .fail
 
-        inc     byte [step]     ; 9: 80186 instructions
+        inc     byte [step]     ; 9: 80186 instructions (V20/V30/186+ only)
+        cmp     byte [cpu_has_186], 0
+        je      .skip_186
+        cpu     186
         push    1234h
         pop     ax
         cmp     ax, 1234h
@@ -120,6 +196,8 @@ test_cpu:
         shl     ax, 4
         cmp     ax, 2340h
         jne     .fail
+        cpu     8086
+.skip_186:
 
         inc     byte [step]     ; 10: string ops
         mov     si, s_title
@@ -292,7 +370,9 @@ p_check:
 ; Address pattern: word i of paragraph DX is (DX << 3) | i, unique in 1MB.
 p_waddr_write:
         mov     ax, dx
-        shl     ax, 3
+        shl     ax, 1
+        shl     ax, 1
+        shl     ax, 1
         xor     di, di
 .l:     stosw
         inc     ax
@@ -303,7 +383,9 @@ p_waddr_write:
 
 p_waddr_vbytes:
         mov     ax, dx
-        shl     ax, 3
+        shl     ax, 1
+        shl     ax, 1
+        shl     ax, 1
         xor     di, di
 .l:     mov     cl, [es:di]
         mov     ch, [es:di+1]
@@ -321,7 +403,9 @@ p_waddr_vbytes:
 ; Inverted, byte-swapped address pattern, written as bytes (odd byte first).
 p_baddr_write:
         mov     ax, dx
-        shl     ax, 3
+        shl     ax, 1
+        shl     ax, 1
+        shl     ax, 1
         xor     di, di
 .l:     mov     cx, ax
         not     cx
@@ -337,7 +421,9 @@ p_baddr_write:
 
 p_baddr_vwords:
         mov     ax, dx
-        shl     ax, 3
+        shl     ax, 1
+        shl     ax, 1
+        shl     ax, 1
         xor     di, di
 .l:     mov     cx, [es:di]
         push    ax
@@ -719,7 +805,10 @@ print_u32:
 print_hex16:
         mov     cx, 4
         mov     bx, hexdigits
-.l:     rol     ax, 4
+.l:     rol     ax, 1
+        rol     ax, 1
+        rol     ax, 1
+        rol     ax, 1
         push    ax
         and     al, 0Fh
         xlat
@@ -734,6 +823,11 @@ print_hex16:
 
 s_title     db  "cradle86 sanity check", CRLF, '$'
 s_cpu       db  "CPU ......... $"
+s_cpu_v30   db  "NEC V30 (16-bit)$"
+s_cpu_v20   db  "NEC V20 (8-bit)$"
+s_cpu_8086  db  "Intel 8086/80C86 (16-bit)$"
+s_cpu_8088  db  "Intel 8088/80C88 (8-bit)$"
+s_cpu_186   db  "80186+$"
 s_mem       db  "Memory ...... $"
 s_clock     db  "Clock ....... $"
 s_aux       db  "AUX ......... $"
@@ -766,6 +860,9 @@ patterns    dw  0000h, 0FFFFh, 5555h, 0AAAAh
 patterns_end:
 
 farptr      dw  far_target, 0
+cpu_has_186 db  0
+cpu_is_nec  db  0
+cpu_is_16bit db 0
 fails       db  0
 step        db  0
 crit        db  0

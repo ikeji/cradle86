@@ -26,6 +26,8 @@ DISK_FILES = ../HIDOS/BUILD/BIN/COMMAND.COM \
 						 ../HIDOS/BUILD/MASM.EXE \
 						 ../HIDOS/BUILD/LINK.EXE \
 						 SANITY.COM \
+						 MANDEL.COM \
+						 LIFE.COM \
 						 ../tiny-vi-clone/vi.exe \
 						 ../tiny-vi-clone/vi-quiet.exe \
 						 ../sha1sum/sha1sum.exe \
@@ -81,8 +83,14 @@ $(DISK_TARGET): $(DISK_FILES)
 	done
 	@echo "Boot disk created successfully."
 
-# cradle86 sanity check (run SANITY on the DOS console)
+# cradle86 sanity check and demos (run on the DOS console)
 SANITY.COM: sanity.asm
+	nasm -f bin -o $@ $<
+
+MANDEL.COM: mandel.asm
+	nasm -f bin -o $@ $<
+
+LIFE.COM: life.asm
 	nasm -f bin -o $@ $<
 
 # Prebuilt DOS tools from submodules (git submodule update --init)
@@ -97,5 +105,5 @@ $(VM_IO):
 
 clean:
 	@echo "Cleaning up..."
-	rm -f $(TARGET) $(DISK_TARGET) SANITY.COM
+	rm -f $(TARGET) $(DISK_TARGET) SANITY.COM MANDEL.COM LIFE.COM
 	@echo "Done."
