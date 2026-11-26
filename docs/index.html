@@ -130,7 +130,30 @@
   .files-table td.act button { padding: 3px 8px; font-size: 11px; margin-left: 4px; }
   .files-table tr:hover td { background: #1b222c; }
   .files-dir { color: var(--accent2); cursor: pointer; font-weight: 700; }
+  .files-name { cursor: pointer; }
+  .files-name:hover { text-decoration: underline; color: var(--accent2); }
   .files-empty { color: var(--muted); padding: 18px; text-align: center; font-size: 13px; }
+  .fview {
+    display: none; flex-direction: column; min-height: 0; flex: 1.2;
+    border: 1px solid var(--border); border-radius: 6px; background: #0b0e14;
+    overflow: hidden;
+  }
+  .fview.open { display: flex; }
+  .fview-head {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    padding: 5px 8px; background: #161b22; border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .fview-title {
+    font-family: ui-monospace, monospace; font-weight: 700; color: var(--accent);
+    margin-right: auto;
+  }
+  .fview-body {
+    flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px; line-height: 1.45; color: #e6edf3; white-space: pre;
+    tab-size: 8;
+  }
 </style>
 </head>
 <body>
@@ -195,6 +218,17 @@
             <thead><tr><th>名前</th><th style="text-align:right">サイズ</th><th>更新日時</th><th style="text-align:right">操作</th></tr></thead>
             <tbody id="files-tbody"></tbody>
           </table>
+        </div>
+        <div id="fview" class="fview">
+          <div class="fview-head">
+            <span id="fview-title" class="fview-title"></span>
+            <button id="btn-fv-sjis">SJIS</button>
+            <button id="btn-fv-hex">HEX</button>
+            <button id="btn-fv-more" style="display:none">全表示</button>
+            <button id="btn-fv-dl">DL</button>
+            <button id="btn-fv-close">✕</button>
+          </div>
+          <pre id="fview-body" class="fview-body"></pre>
         </div>
         <div style="font-size:11px;color:var(--muted);">
           ※ ファイルをここにドラッグ&amp;ドロップでも追加できます。追加・削除後は DOS 側へ自動でディスク交換を通知します（ファイル名は 8.3 形式に正規化されます）。
@@ -732,6 +766,8 @@
         tdName.onclick = () => { dirStack.push({ name: e.name, clus: e.clus }); renderFileList(); };
       } else {
         tdName.textContent = e.name;
+        tdName.className = 'files-name';
+        tdName.onclick = () => openFilePreview(e);
       }
       const tdSize = document.createElement('td');
       tdSize.className = 'num';
@@ -742,31 +778,119 @@
       const tdAct = document.createElement('td');
       tdAct.className = 'act';
       if (!e.isDir) {
+        const bView = document.createElement('button');
+        bView.textContent = '表示';
+        bView.onclick = () => openFilePreview(e);
         const bDl = document.createElement('button');
         bDl.textContent = 'DL';
-        bDl.onclick = () => {
-          const data = fatReadFile(diskImg, e.clus, e.size);
-          const blob = new Blob([data], { type: 'application/octet-stream' });
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = e.name;
-          a.click();
-          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-        };
+        bDl.onclick = () => downloadBytes(fatReadFile(diskImg, e.clus, e.size), e.name);
         const bDel = document.createElement('button');
         bDel.textContent = '削除';
         bDel.className = 'danger';
         bDel.onclick = () => {
           fatDeleteFile(diskImg, e);
+          if (previewState && previewState.name === e.name) closeFilePreview();
           setStatus(`B: から ${e.name} を削除しました`, 'ok');
           renderFileList();
         };
-        tdAct.append(bDl, bDel);
+        tdAct.append(bView, bDl, bDel);
       }
       tr.append(tdName, tdSize, tdDate, tdAct);
       tbody.appendChild(tr);
     }
   }
+
+  function downloadBytes(data, filename) {
+    const blob = new Blob([data], { type: 'application/octet-stream' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // ---- File Preview (SJIS text / Hex dump) ----
+  const fviewEl = document.getElementById('fview');
+  const fviewTitle = document.getElementById('fview-title');
+  const fviewBody = document.getElementById('fview-body');
+  const btnFvSjis = document.getElementById('btn-fv-sjis');
+  const btnFvHex = document.getElementById('btn-fv-hex');
+  const btnFvMore = document.getElementById('btn-fv-more');
+  let previewState = null; // { name, data, mode: 'sjis'|'hex', showAll: bool }
+  const HEX_INITIAL_LIMIT = 32768;
+
+  function looksLikeText(name, data) {
+    if (/\.(EXE|COM|LZH|OBJ|LIB|IMG|BIN|SYS)$/i.test(name)) return false;
+    const n = Math.min(data.length, 4096);
+    for (let i = 0; i < n; i++) {
+      const b = data[i];
+      if (b === 0x00) return false;
+    }
+    return true;
+  }
+
+  function formatHexDump(data, limit) {
+    const n = Math.min(data.length, limit);
+    const lines = [];
+    for (let i = 0; i < n; i += 16) {
+      let hex = '';
+      let asc = '';
+      for (let j = 0; j < 16; j++) {
+        if (j === 8) hex += ' ';
+        if (i + j < n) {
+          const b = data[i + j];
+          hex += b.toString(16).toUpperCase().padStart(2, '0') + ' ';
+          asc += (b >= 0x20 && b <= 0x7E) ? String.fromCharCode(b) : '.';
+        } else {
+          hex += '   ';
+        }
+      }
+      lines.push(i.toString(16).toUpperCase().padStart(8, '0') + ': ' + hex + ' |' + asc + '|');
+    }
+    if (n < data.length) {
+      lines.push(`... (${n.toLocaleString()} / ${data.length.toLocaleString()} bytes 表示。「全表示」で残りも表示)`);
+    }
+    return lines.join('\n');
+  }
+
+  function renderFilePreview() {
+    if (!previewState) return;
+    const { name, data, mode, showAll } = previewState;
+    fviewTitle.textContent = `${name} (${data.length.toLocaleString()} B)`;
+    btnFvSjis.classList.toggle('active', mode === 'sjis');
+    btnFvHex.classList.toggle('active', mode === 'hex');
+    if (mode === 'sjis') {
+      btnFvMore.style.display = 'none';
+      const dec = new TextDecoder('shift_jis', { fatal: false });
+      fviewBody.textContent = dec.decode(data);
+    } else {
+      const limit = showAll ? data.length : HEX_INITIAL_LIMIT;
+      btnFvMore.style.display = (!showAll && data.length > HEX_INITIAL_LIMIT) ? '' : 'none';
+      fviewBody.textContent = formatHexDump(data, limit);
+    }
+    fviewEl.classList.add('open');
+  }
+
+  function openFilePreview(entry) {
+    const data = fatReadFile(diskImg, entry.clus, entry.size);
+    const mode = looksLikeText(entry.name, data) ? 'sjis' : 'hex';
+    previewState = { name: entry.name, data, mode, showAll: false };
+    renderFilePreview();
+  }
+
+  function closeFilePreview() {
+    previewState = null;
+    fviewEl.classList.remove('open');
+    fviewBody.textContent = '';
+  }
+
+  btnFvSjis.onclick = () => { if (previewState) { previewState.mode = 'sjis'; renderFilePreview(); } };
+  btnFvHex.onclick  = () => { if (previewState) { previewState.mode = 'hex'; renderFilePreview(); } };
+  btnFvMore.onclick = () => { if (previewState) { previewState.showAll = true; renderFilePreview(); } };
+  document.getElementById('btn-fv-dl').onclick = () => {
+    if (previewState) downloadBytes(previewState.data, previewState.name);
+  };
+  document.getElementById('btn-fv-close').onclick = closeFilePreview;
 
   async function uploadFilesToB(fileList) {
     const cur = dirStack[dirStack.length - 1];
