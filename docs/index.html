@@ -99,6 +99,38 @@
   .softkeys button {
     padding: 7px 10px; font-size: 12px; flex: 0 0 auto;
   }
+
+  /* File manager pane (B:) */
+  .files-wrap {
+    flex: 1; min-height: 0; overflow: auto; padding: 10px 14px;
+    background: #141921; display: flex; flex-direction: column; gap: 8px;
+  }
+  .files-bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  }
+  .files-path {
+    font-family: ui-monospace, monospace; font-size: 13px; font-weight: 700;
+    color: var(--accent); margin-right: auto;
+  }
+  .files-drop {
+    border: 1px dashed #444c56; border-radius: 6px; padding: 6px;
+    background: #0f131a; flex: 1; min-height: 120px; overflow: auto;
+  }
+  .files-drop.dragover { border-color: var(--accent2); background: #162233; }
+  .files-table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .files-table th, .files-table td {
+    text-align: left; padding: 5px 8px; border-bottom: 1px solid #222933;
+  }
+  .files-table th { color: var(--muted); font-size: 11px; font-weight: 600; }
+  .files-table td.num { text-align: right; color: var(--muted); }
+  .files-table td.act { text-align: right; white-space: nowrap; }
+  .files-table td.act button { padding: 3px 8px; font-size: 11px; margin-left: 4px; }
+  .files-table tr:hover td { background: #1b222c; }
+  .files-dir { color: var(--accent2); cursor: pointer; font-weight: 700; }
+  .files-empty { color: var(--muted); padding: 18px; text-align: center; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -139,6 +171,7 @@
   <div class="tabs">
     <button id="tab-dos" class="active">DOS コンソール <span id="dos-state" style="font-weight:400;opacity:0.75;">(offline)</span></button>
     <button id="tab-mon">モニタ (Monitor) <span id="mon-state" style="font-weight:400;opacity:0.75;">(offline)</span></button>
+    <button id="tab-files">B: ファイル</button>
   </div>
 
   <div class="panes">
@@ -147,6 +180,26 @@
     </section>
     <section id="pane-mon" class="pane">
       <div class="term-wrap"><div class="term-box"><div id="term-mon"></div></div></div>
+    </section>
+    <section id="pane-files" class="pane">
+      <div class="files-wrap">
+        <div class="files-bar">
+          <span id="files-path" class="files-path">B:\</span>
+          <button id="btn-f-up">↑ 上へ</button>
+          <button id="btn-f-upload" class="primary">↑ アップロード</button>
+          <button id="btn-f-refresh">更新</button>
+          <input id="f-upload-input" type="file" multiple style="display:none">
+        </div>
+        <div id="files-drop" class="files-drop">
+          <table class="files-table">
+            <thead><tr><th>名前</th><th style="text-align:right">サイズ</th><th>更新日時</th><th style="text-align:right">操作</th></tr></thead>
+            <tbody id="files-tbody"></tbody>
+          </table>
+        </div>
+        <div style="font-size:11px;color:var(--muted);">
+          ※ ファイルをここにドラッグ&amp;ドロップでも追加できます。追加・削除後は DOS 側へ自動でディスク交換を通知します（ファイル名は 8.3 形式に正規化されます）。
+        </div>
+      </div>
     </section>
   </div>
 
@@ -184,8 +237,10 @@
   const diskStatEl = document.getElementById('disk-stat');
   const paneDos = document.getElementById('pane-dos');
   const paneMon = document.getElementById('pane-mon');
+  const paneFiles = document.getElementById('pane-files');
   const tabDos = document.getElementById('tab-dos');
   const tabMon = document.getElementById('tab-mon');
+  const tabFiles = document.getElementById('tab-files');
 
   let activeTab = 'dos';
   let fontSize = 13;
@@ -375,7 +430,9 @@
     diskImg = makeEmptyFat12();
     diskChanged = true;
     diskReads = 0; diskWrites = 0;
+    dirStack = [{ name: 'B:', clus: 0 }];
     updateDiskStat();
+    if (activeTab === 'files') renderFileList();
   };
   document.getElementById('btn-disk-save').onclick = () => {
     const blob = new Blob([diskImg], { type: 'application/octet-stream' });
@@ -394,7 +451,9 @@
     diskImg = new Uint8Array(buf);
     diskChanged = true;
     diskReads = 0; diskWrites = 0;
+    dirStack = [{ name: 'B:', clus: 0 }];
     updateDiskStat();
+    if (activeTab === 'files') renderFileList();
     diskFileInput.value = '';
   };
   document.getElementById('btn-disk-lsic').onclick = async () => {
@@ -414,7 +473,9 @@
       diskImg = new Uint8Array(buf);
       diskChanged = true;
       diskReads = 0; diskWrites = 0;
+      dirStack = [{ name: 'B:', clus: 0 }];
       updateUI();
+      if (activeTab === 'files') renderFileList();
       setStatus('B: に LHA255.EXE + LSIC330C.LZH (4MB) をマウントしました', 'ok');
     } catch (err) {
       setStatus('B: プリセット読込エラー: ' + err.message, 'err');
@@ -422,6 +483,329 @@
       btn.disabled = false;
     }
   };
+
+  // ---- FAT12 File Manager for B: ----
+  let dirStack = [{ name: 'B:', clus: 0 }]; // clus 0 = root directory
+
+  function fatInfo(img) {
+    const dv = new DataView(img.buffer, img.byteOffset, img.byteLength);
+    const bytesPerSec = dv.getUint16(11, true);
+    const secPerClus = img[13];
+    const rsvdSec = dv.getUint16(14, true);
+    const numFats = img[16];
+    const rootEntCnt = dv.getUint16(17, true);
+    const totSec = dv.getUint16(19, true) || dv.getUint32(32, true);
+    const fatSz = dv.getUint16(22, true);
+    if (!bytesPerSec || !secPerClus || !fatSz) throw new Error('Invalid FAT12 BPB');
+    const fatStart = rsvdSec * bytesPerSec;
+    const fatBytes = fatSz * bytesPerSec;
+    const rootStart = fatStart + numFats * fatBytes;
+    const rootBytes = rootEntCnt * 32;
+    const dataStart = rootStart + rootBytes;
+    const clusSize = bytesPerSec * secPerClus;
+    const maxClus = Math.floor((totSec * bytesPerSec - dataStart) / clusSize) + 1;
+    return { bytesPerSec, secPerClus, rsvdSec, numFats, rootEntCnt, totSec, fatSz,
+             fatStart, fatBytes, rootStart, rootBytes, dataStart, clusSize, maxClus };
+  }
+
+  function getFat12(img, info, c) {
+    const off = info.fatStart + Math.floor((c * 3) / 2);
+    if (c & 1) return ((img[off] >> 4) | (img[off + 1] << 4)) & 0xFFF;
+    return (img[off] | ((img[off + 1] & 0x0F) << 8)) & 0xFFF;
+  }
+
+  function setFat12(img, info, c, val) {
+    const rel = Math.floor((c * 3) / 2);
+    for (let f = 0; f < info.numFats; f++) {
+      const off = info.fatStart + f * info.fatBytes + rel;
+      if (c & 1) {
+        img[off] = (img[off] & 0x0F) | ((val & 0x0F) << 4);
+        img[off + 1] = (val >> 4) & 0xFF;
+      } else {
+        img[off] = val & 0xFF;
+        img[off + 1] = (img[off + 1] & 0xF0) | ((val >> 8) & 0x0F);
+      }
+    }
+  }
+
+  function clusOffset(info, c) {
+    return info.dataStart + (c - 2) * info.clusSize;
+  }
+
+  function getChain(img, info, startClus) {
+    const chain = [];
+    const seen = new Set();
+    let c = startClus;
+    while (c >= 2 && c <= info.maxClus && !seen.has(c)) {
+      seen.add(c);
+      chain.push(c);
+      const next = getFat12(img, info, c);
+      if (next >= 0xFF8 || next < 2) break;
+      c = next;
+    }
+    return chain;
+  }
+
+  function freeChain(img, info, startClus) {
+    for (const c of getChain(img, info, startClus)) setFat12(img, info, c, 0);
+  }
+
+  function allocChain(img, info, n) {
+    if (n === 0) return [];
+    const free = [];
+    for (let c = 2; c <= info.maxClus && free.length < n; c++) {
+      if (getFat12(img, info, c) === 0) free.push(c);
+    }
+    if (free.length < n) throw new Error('B: ドライブの空き容量が足りません');
+    for (let i = 0; i < free.length; i++) {
+      setFat12(img, info, free[i], i + 1 < free.length ? free[i + 1] : 0xFFF);
+    }
+    return free;
+  }
+
+  function dirSpans(img, info, dirClus) {
+    if (dirClus === 0) return [{ off: info.rootStart, len: info.rootBytes }];
+    return getChain(img, info, dirClus).map(c => ({ off: clusOffset(info, c), len: info.clusSize }));
+  }
+
+  function decode83(img, off) {
+    let base = '', ext = '';
+    for (let i = 0; i < 8; i++) base += String.fromCharCode(img[off + i]);
+    for (let i = 0; i < 3; i++) ext += String.fromCharCode(img[off + 8 + i]);
+    base = base.trimEnd();
+    ext = ext.trimEnd();
+    return ext ? `${base}.${ext}` : base;
+  }
+
+  function encode83(name) {
+    const upper = name.toUpperCase();
+    const dot = upper.lastIndexOf('.');
+    let rawBase = dot > 0 ? upper.slice(0, dot) : upper;
+    let rawExt = dot > 0 ? upper.slice(dot + 1) : '';
+    const clean = s => s.replace(/[^A-Z0-9!#$%&'()\-@^_`{}~]/g, '');
+    const base = (clean(rawBase) || 'FILE').slice(0, 8).padEnd(8, ' ');
+    const ext = clean(rawExt).slice(0, 3).padEnd(3, ' ');
+    const out = new Uint8Array(11);
+    for (let i = 0; i < 8; i++) out[i] = base.charCodeAt(i);
+    for (let i = 0; i < 3; i++) out[8 + i] = ext.charCodeAt(i);
+    return out;
+  }
+
+  function listDir(img, dirClus) {
+    const info = fatInfo(img);
+    const dv = new DataView(img.buffer, img.byteOffset, img.byteLength);
+    const entries = [];
+    for (const sp of dirSpans(img, info, dirClus)) {
+      for (let p = sp.off; p < sp.off + sp.len; p += 32) {
+        const b0 = img[p];
+        if (b0 === 0x00) return entries;
+        if (b0 === 0xE5) continue;
+        const attr = img[p + 11];
+        if ((attr & 0x08) || attr === 0x0F) continue; // volume label / LFN
+        const name = decode83(img, p);
+        if (name === '.' || name === '..') continue;
+        const clus = dv.getUint16(p + 26, true);
+        const size = dv.getUint32(p + 28, true);
+        const t = dv.getUint16(p + 22, true);
+        const d = dv.getUint16(p + 24, true);
+        const yr = ((d >> 9) & 0x7F) + 1980, mo = (d >> 5) & 0x0F, dy = d & 0x1F;
+        const hr = (t >> 11) & 0x1F, mi = (t >> 5) & 0x3F;
+        const dateStr = d ? `${yr}-${String(mo).padStart(2,'0')}-${String(dy).padStart(2,'0')} ${String(hr).padStart(2,'0')}:${String(mi).padStart(2,'0')}` : '';
+        entries.push({ name, isDir: !!(attr & 0x10), clus, size, dateStr, entryOff: p });
+      }
+    }
+    return entries;
+  }
+
+  function fatReadFile(img, startClus, size) {
+    const info = fatInfo(img);
+    const out = new Uint8Array(size);
+    let written = 0;
+    for (const c of getChain(img, info, startClus)) {
+      const take = Math.min(info.clusSize, size - written);
+      const off = clusOffset(info, c);
+      out.set(img.subarray(off, off + take), written);
+      written += take;
+      if (written >= size) break;
+    }
+    return out;
+  }
+
+  function fatWriteFile(img, dirClus, filename, data) {
+    const info = fatInfo(img);
+    const dv = new DataView(img.buffer, img.byteOffset, img.byteLength);
+    const n83 = encode83(filename);
+    const match83 = off => {
+      for (let i = 0; i < 11; i++) if (img[off + i] !== n83[i]) return false;
+      return true;
+    };
+
+    // Find existing entry (to overwrite) or first free slot
+    let slotOff = -1;
+    let spans = dirSpans(img, info, dirClus);
+    outer:
+    for (const sp of spans) {
+      for (let p = sp.off; p < sp.off + sp.len; p += 32) {
+        const b0 = img[p];
+        if (b0 === 0x00) {
+          if (slotOff < 0) slotOff = p;
+          break outer;
+        }
+        if (b0 === 0xE5) {
+          if (slotOff < 0) slotOff = p;
+          continue;
+        }
+        if (!(img[p + 11] & 0x18) && match83(p)) {
+          freeChain(img, info, dv.getUint16(p + 26, true));
+          slotOff = p;
+          break outer;
+        }
+      }
+    }
+    if (slotOff < 0) {
+      if (dirClus === 0) throw new Error('ルートディレクトリが一杯です');
+      // Grow subdirectory by 1 cluster
+      const chain = getChain(img, info, dirClus);
+      const [newC] = allocChain(img, info, 1);
+      setFat12(img, info, chain[chain.length - 1], newC);
+      const off = clusOffset(info, newC);
+      img.fill(0, off, off + info.clusSize);
+      slotOff = off;
+    }
+
+    const needClus = data.length ? Math.ceil(data.length / info.clusSize) : 0;
+    const chain = allocChain(img, info, needClus);
+    for (let i = 0; i < chain.length; i++) {
+      const off = clusOffset(info, chain[i]);
+      const src = data.subarray(i * info.clusSize, Math.min(data.length, (i + 1) * info.clusSize));
+      img.fill(0, off, off + info.clusSize);
+      img.set(src, off);
+    }
+
+    const now = new Date();
+    const dosTime = ((now.getHours() & 31) << 11) | ((now.getMinutes() & 63) << 5) | ((now.getSeconds() >> 1) & 31);
+    const dosDate = ((Math.max(0, now.getFullYear() - 1980) & 127) << 9) | (((now.getMonth() + 1) & 15) << 5) | (now.getDate() & 31);
+    img.fill(0, slotOff, slotOff + 32);
+    img.set(n83, slotOff);
+    img[slotOff + 11] = 0x20; // Archive
+    dv.setUint16(slotOff + 22, dosTime, true);
+    dv.setUint16(slotOff + 24, dosDate, true);
+    dv.setUint16(slotOff + 26, chain.length ? chain[0] : 0, true);
+    dv.setUint32(slotOff + 28, data.length, true);
+    diskChanged = true;
+    return decode83(img, slotOff);
+  }
+
+  function fatDeleteFile(img, entry) {
+    const info = fatInfo(img);
+    if (entry.clus >= 2) freeChain(img, info, entry.clus);
+    img[entry.entryOff] = 0xE5;
+    diskChanged = true;
+  }
+
+  function renderFileList() {
+    const cur = dirStack[dirStack.length - 1];
+    document.getElementById('files-path').textContent =
+      dirStack.map(d => d.name).join('\\') + (dirStack.length === 1 ? '\\' : '');
+    document.getElementById('btn-f-up').disabled = dirStack.length <= 1;
+
+    const tbody = document.getElementById('files-tbody');
+    tbody.innerHTML = '';
+    let entries;
+    try {
+      entries = listDir(diskImg, cur.clus);
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="4" class="files-empty">FAT12 解析エラー: ${err.message}</td></tr>`;
+      return;
+    }
+    entries.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name));
+    if (entries.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="files-empty">(ファイルがありません)</td></tr>';
+      return;
+    }
+    for (const e of entries) {
+      const tr = document.createElement('tr');
+      const tdName = document.createElement('td');
+      if (e.isDir) {
+        tdName.textContent = e.name + '\\';
+        tdName.className = 'files-dir';
+        tdName.onclick = () => { dirStack.push({ name: e.name, clus: e.clus }); renderFileList(); };
+      } else {
+        tdName.textContent = e.name;
+      }
+      const tdSize = document.createElement('td');
+      tdSize.className = 'num';
+      tdSize.textContent = e.isDir ? '<DIR>' : e.size.toLocaleString();
+      const tdDate = document.createElement('td');
+      tdDate.style.color = 'var(--muted)';
+      tdDate.textContent = e.dateStr;
+      const tdAct = document.createElement('td');
+      tdAct.className = 'act';
+      if (!e.isDir) {
+        const bDl = document.createElement('button');
+        bDl.textContent = 'DL';
+        bDl.onclick = () => {
+          const data = fatReadFile(diskImg, e.clus, e.size);
+          const blob = new Blob([data], { type: 'application/octet-stream' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = e.name;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        };
+        const bDel = document.createElement('button');
+        bDel.textContent = '削除';
+        bDel.className = 'danger';
+        bDel.onclick = () => {
+          fatDeleteFile(diskImg, e);
+          setStatus(`B: から ${e.name} を削除しました`, 'ok');
+          renderFileList();
+        };
+        tdAct.append(bDl, bDel);
+      }
+      tr.append(tdName, tdSize, tdDate, tdAct);
+      tbody.appendChild(tr);
+    }
+  }
+
+  async function uploadFilesToB(fileList) {
+    const cur = dirStack[dirStack.length - 1];
+    const added = [];
+    try {
+      for (const f of fileList) {
+        const data = new Uint8Array(await f.arrayBuffer());
+        const saved = fatWriteFile(diskImg, cur.clus, f.name, data);
+        added.push(saved);
+      }
+      if (added.length) {
+        setStatus(`B: にアップロードしました: ${added.join(', ')}`, 'ok');
+        renderFileList();
+      }
+    } catch (err) {
+      setStatus('B: アップロードエラー: ' + err.message, 'err');
+    }
+  }
+
+  const fUploadInput = document.getElementById('f-upload-input');
+  document.getElementById('btn-f-upload').onclick = () => fUploadInput.click();
+  fUploadInput.onchange = async () => {
+    if (fUploadInput.files.length) await uploadFilesToB(fUploadInput.files);
+    fUploadInput.value = '';
+  };
+  document.getElementById('btn-f-refresh').onclick = renderFileList;
+  document.getElementById('btn-f-up').onclick = () => {
+    if (dirStack.length > 1) { dirStack.pop(); renderFileList(); }
+  };
+  const filesDrop = document.getElementById('files-drop');
+  filesDrop.addEventListener('dragover', ev => { ev.preventDefault(); filesDrop.classList.add('dragover'); });
+  filesDrop.addEventListener('dragleave', () => filesDrop.classList.remove('dragover'));
+  filesDrop.addEventListener('drop', async ev => {
+    ev.preventDefault();
+    filesDrop.classList.remove('dragover');
+    if (ev.dataTransfer && ev.dataTransfer.files.length) {
+      await uploadFilesToB(ev.dataTransfer.files);
+    }
+  });
 
   function setStatus(msg, cls = '') {
     statusEl.textContent = msg;
@@ -464,13 +848,20 @@
     activeTab = which;
     tabDos.classList.toggle('active', which === 'dos');
     tabMon.classList.toggle('active', which === 'mon');
+    tabFiles.classList.toggle('active', which === 'files');
     paneDos.classList.toggle('visible', which === 'dos');
     paneMon.classList.toggle('visible', which === 'mon');
-    if (autoFit) requestAnimationFrame(fitTerminal);
-    (which === 'dos' ? termDos : termMon).focus();
+    paneFiles.classList.toggle('visible', which === 'files');
+    if (which === 'files') {
+      renderFileList();
+    } else {
+      if (autoFit) requestAnimationFrame(fitTerminal);
+      (which === 'dos' ? termDos : termMon).focus();
+    }
   }
   tabDos.onclick = () => switchTab('dos');
   tabMon.onclick = () => switchTab('mon');
+  tabFiles.onclick = () => switchTab('files');
 
   function applyFontSize(sz) {
     fontSize = Math.max(6, Math.min(36, sz));
@@ -479,6 +870,7 @@
   }
 
   function fitTerminal() {
+    if (activeTab === 'files') return;
     const pane = activeTab === 'dos' ? paneDos : paneMon;
     const wrap = pane.querySelector('.term-wrap');
     const availW = wrap.clientWidth - 26;
@@ -761,7 +1153,7 @@
     btn.onclick = () => {
       const seq = keyMap[btn.dataset.key];
       if (!seq) return;
-      sendText(activeTab, seq);
+      sendText(activeTab === 'mon' ? 'mon' : 'dos', seq);
     };
   });
 
