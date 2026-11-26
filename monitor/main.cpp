@@ -2260,7 +2260,7 @@ int main() {
   apply_default_gpio_clock();
 
   char line[128], *argv[16];
-  printf("\n\n=== V30 Monitor v%s ===\nType '?' for help.\n", VERSION_STR);
+  printf("\n\n=== cradle86 Monitor v%s ===\nType '?' for help.\n", VERSION_STR);
 
   while (true) {
     printf("mon> ");
@@ -2430,7 +2430,7 @@ int main() {
         }
       }
     } else if (strcmp(cmd, "g") == 0) {
-      printf("Running V30 (No Log). Press any key to stop...\n");
+      printf("Running CPU (No Log). Press any key to stop...\n");
       cycle_limit = 0x7FFFFFFF; // Effectively infinite for manual stop
       multicore_fifo_push_blocking(CMD_RUN_NOLOG);
       getchar();
@@ -2502,7 +2502,7 @@ int main() {
       bool is_infinite = (run_cycles_val == 0);
 
       if (is_infinite) {
-        printf("Running V30 (Logging, Infinite cycles). Press any key to "
+        printf("Running CPU (Logging, Infinite cycles). Press any key to "
                "stop...\n");
         cycle_limit = 0x7FFFFFFF;
       } else if (run_cycles_val < 0 || run_cycles_val > MAX_CYCLES) {
@@ -2510,7 +2510,7 @@ int main() {
                run_cycles_val, MAX_CYCLES);
         cycle_limit = MAX_CYCLES;
       } else {
-        printf("Running V30 (Logging %d cycles)...\n", run_cycles_val);
+        printf("Running CPU (Logging %d cycles)...\n", run_cycles_val);
         cycle_limit = run_cycles_val;
       }
 
@@ -2555,7 +2555,7 @@ int main() {
       bool is_infinite = (run_cycles_val == 0);
 
       if (is_infinite) {
-        printf("Running V30 (Logging IO, Infinite cycles). Press any key to "
+        printf("Running CPU (Logging IO, Infinite cycles). Press any key to "
                "stop...\n");
         cycle_limit = 0x7FFFFFFF;
       } else if (run_cycles_val < 0 || run_cycles_val > MAX_CYCLES) {
@@ -2563,7 +2563,7 @@ int main() {
                run_cycles_val, MAX_CYCLES);
         cycle_limit = MAX_CYCLES;
       } else {
-        printf("Running V30 (Logging IO %d cycles)...\n", run_cycles_val);
+        printf("Running CPU (Logging IO %d cycles)...\n", run_cycles_val);
         cycle_limit = run_cycles_val;
       }
       memset(trace_log, 0, sizeof(trace_log));

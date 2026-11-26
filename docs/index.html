@@ -65,7 +65,7 @@
   }
 
   .tabs {
-    display: none; gap: 4px; padding: 4px 10px; background: var(--panel);
+    display: flex; gap: 4px; padding: 4px 10px; background: var(--panel);
     border-bottom: 1px solid var(--border);
   }
   .tabs button { flex: 1; padding: 6px; }
@@ -74,22 +74,22 @@
     flex: 1; display: flex; min-height: 0; overflow: hidden;
   }
   .pane {
-    flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;
-    border-right: 1px solid var(--border);
+    flex: 1; display: none; flex-direction: column; min-width: 0; min-height: 0;
   }
-  .pane:last-child { border-right: none; }
-  .pane-head {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 3px 8px; background: #141921; border-bottom: 1px solid var(--border);
-    font-size: 11px; color: var(--muted);
-  }
-  .pane-head strong { color: var(--text); font-size: 12px; }
+  .pane.visible { display: flex; }
   .term-wrap {
-    flex: 1; min-height: 0; padding: 4px; background: #000; overflow: auto;
-    display: flex; align-items: flex-start; justify-content: flex-start;
+    flex: 1; min-height: 0; padding: 8px;
+    background: #2d333b;
+    overflow: auto;
+    display: flex; align-items: center; justify-content: center;
   }
-  #pane-mon { flex: 0.72; }
-  #pane-dos { flex: 1.28; }
+  .term-box {
+    background: #000;
+    border: 1px solid #636e7b;
+    border-radius: 4px;
+    padding: 3px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
+  }
 
   .softkeys {
     display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 5px;
@@ -98,14 +98,6 @@
   }
   .softkeys button {
     padding: 7px 10px; font-size: 12px; flex: 0 0 auto;
-  }
-
-  /* Mobile / narrow screens: tab switch instead of side-by-side */
-  @media (max-width: 860px) {
-    .tabs { display: flex; }
-    .pane { display: none; border-right: none; }
-    .pane.visible { display: flex; }
-    .pane-head { display: none; }
   }
 </style>
 </head>
@@ -132,6 +124,7 @@
     <button id="btn-vi" disabled>VI</button>
     <button id="btn-dir" disabled>DIR</button>
     <span class="sep"></span>
+    <button id="btn-disk-lsic" title="LHA255.EXE + LSIC330C.LZH 入り4MBイメージをB:にマウント">B: LHA+LSIC</button>
     <button id="btn-disk-load" title="FAT12イメージをB:にマウント">B:読込</button>
     <button id="btn-disk-save" title="現在のB:イメージを保存">B:保存</button>
     <button id="btn-disk-reset" title="B:を空の1MB FAT12で初期化">B:初期化</button>
@@ -140,28 +133,20 @@
     <span class="sep"></span>
     <button id="btn-font-dec" title="文字を小さく">A-</button>
     <button id="btn-font-inc" title="文字を大きく">A+</button>
-    <button id="btn-fit" title="画面幅に合わせる">幅自動</button>
+    <button id="btn-fit" class="active" title="80x25をウィンドウに自動内接">自動</button>
   </div>
 
   <div class="tabs">
-    <button id="tab-dos" class="active">DOS コンソール</button>
-    <button id="tab-mon">モニタ (Monitor)</button>
+    <button id="tab-dos" class="active">DOS コンソール <span id="dos-state" style="font-weight:400;opacity:0.75;">(offline)</span></button>
+    <button id="tab-mon">モニタ (Monitor) <span id="mon-state" style="font-weight:400;opacity:0.75;">(offline)</span></button>
   </div>
 
   <div class="panes">
     <section id="pane-dos" class="pane visible">
-      <div class="pane-head">
-        <strong>DOS Console (Port 1 / if02)</strong>
-        <span id="dos-state">offline</span>
-      </div>
-      <div class="term-wrap"><div id="term-dos"></div></div>
+      <div class="term-wrap"><div class="term-box"><div id="term-dos"></div></div></div>
     </section>
     <section id="pane-mon" class="pane">
-      <div class="pane-head">
-        <strong>Monitor (Port 0 / if00)</strong>
-        <span id="mon-state">offline</span>
-      </div>
-      <div class="term-wrap"><div id="term-mon"></div></div>
+      <div class="term-wrap"><div class="term-box"><div id="term-mon"></div></div></div>
     </section>
   </div>
 
@@ -387,6 +372,31 @@
     updateDiskStat();
     diskFileInput.value = '';
   };
+  document.getElementById('btn-disk-lsic').onclick = async () => {
+    const btn = document.getElementById('btn-disk-lsic');
+    btn.disabled = true;
+    try {
+      setStatus('LHA255 + LSIC330C イメージ読込中...');
+      const res = await fetch('./lsic-b.img.gz');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      let buf;
+      if (typeof DecompressionStream !== 'undefined') {
+        const ds = res.body.pipeThrough(new DecompressionStream('gzip'));
+        buf = await new Response(ds).arrayBuffer();
+      } else {
+        throw new Error('DecompressionStream 非対応ブラウザです');
+      }
+      diskImg = new Uint8Array(buf);
+      diskChanged = true;
+      diskReads = 0; diskWrites = 0;
+      updateUI();
+      setStatus('B: に LHA255.EXE + LSIC330C.LZH (4MB) をマウントしました', 'ok');
+    } catch (err) {
+      setStatus('B: プリセット読込エラー: ' + err.message, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  };
 
   function setStatus(msg, cls = '') {
     statusEl.textContent = msg;
@@ -401,8 +411,8 @@
     const monOk = isMonConnected();
     const dosOk = isDosConnected();
     const diskOk = isDiskConnected();
-    monStateEl.textContent = monOk ? 'connected' : 'offline';
-    dosStateEl.textContent = dosOk ? 'connected' : 'offline';
+    monStateEl.textContent = monOk ? '(connected)' : '(offline)';
+    dosStateEl.textContent = dosOk ? '(connected)' : '(offline)';
     updateDiskStat();
 
     document.getElementById('btn-disc').disabled = !(monOk || dosOk || diskOk);
@@ -422,35 +432,78 @@
     }
   }
 
+  let autoFit = true;
+  const btnFit = document.getElementById('btn-fit');
+
   function switchTab(which) {
     activeTab = which;
     tabDos.classList.toggle('active', which === 'dos');
     tabMon.classList.toggle('active', which === 'mon');
     paneDos.classList.toggle('visible', which === 'dos');
     paneMon.classList.toggle('visible', which === 'mon');
+    if (autoFit) requestAnimationFrame(fitTerminal);
     (which === 'dos' ? termDos : termMon).focus();
   }
   tabDos.onclick = () => switchTab('dos');
   tabMon.onclick = () => switchTab('mon');
 
   function applyFontSize(sz) {
-    fontSize = Math.max(7, Math.min(24, sz));
+    fontSize = Math.max(6, Math.min(36, sz));
     termDos.options.fontSize = fontSize;
     termMon.options.fontSize = fontSize;
   }
-  function fitWidth() {
-    // Fit 80 columns nicely into the active terminal wrapper width
-    const wrap = (activeTab === 'dos' ? paneDos : paneMon).querySelector('.term-wrap');
-    const w = Math.max(240, wrap.clientWidth - 12);
-    // Monospace char width is ~0.60 * fontSize
-    const ideal = Math.floor(w / (80 * 0.61));
-    applyFontSize(Math.max(7, Math.min(16, ideal)));
+
+  function fitTerminal() {
+    const pane = activeTab === 'dos' ? paneDos : paneMon;
+    const wrap = pane.querySelector('.term-wrap');
+    const availW = wrap.clientWidth - 26;
+    const availH = wrap.clientHeight - 26;
+    if (availW <= 40 || availH <= 40) return;
+
+    // Measure current actual xterm screen size vs current fontSize to get exact ratio.
+    const scr = pane.querySelector('.xterm-screen');
+    let ratioW = 80 * 0.61;
+    let ratioH = 25 * 1.20;
+    if (scr && scr.offsetWidth > 0 && scr.offsetHeight > 0) {
+      ratioW = scr.offsetWidth / fontSize;
+      ratioH = scr.offsetHeight / fontSize;
+    }
+    let next = Math.floor(Math.min(availW / ratioW, availH / ratioH));
+    next = Math.max(6, Math.min(36, next));
+    applyFontSize(next);
+
+    // Refine once in case font metrics round up at the new integer size.
+    requestAnimationFrame(() => {
+      const s2 = pane.querySelector('.xterm-screen');
+      if (!s2) return;
+      if ((s2.offsetWidth > availW || s2.offsetHeight > availH) && fontSize > 6) {
+        applyFontSize(fontSize - 1);
+      }
+    });
   }
-  document.getElementById('btn-font-dec').onclick = () => applyFontSize(fontSize - 1);
-  document.getElementById('btn-font-inc').onclick = () => applyFontSize(fontSize + 1);
-  document.getElementById('btn-fit').onclick = fitWidth;
-  window.addEventListener('resize', () => { if (window.innerWidth <= 860) fitWidth(); });
-  if (window.innerWidth <= 860) setTimeout(fitWidth, 50);
+
+  document.getElementById('btn-font-dec').onclick = () => {
+    autoFit = false;
+    btnFit.classList.remove('active');
+    applyFontSize(fontSize - 1);
+  };
+  document.getElementById('btn-font-inc').onclick = () => {
+    autoFit = false;
+    btnFit.classList.remove('active');
+    applyFontSize(fontSize + 1);
+  };
+  btnFit.onclick = () => {
+    autoFit = true;
+    btnFit.classList.add('active');
+    fitTerminal();
+  };
+
+  if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(() => { if (autoFit) fitTerminal(); });
+    ro.observe(document.querySelector('.panes'));
+  }
+  window.addEventListener('resize', () => { if (autoFit) fitTerminal(); });
+  setTimeout(fitTerminal, 60);
 
   // ---- Write helpers ----
   function sendBytes(which, bytes) {
@@ -682,8 +735,7 @@
     btn.onclick = () => {
       const seq = keyMap[btn.dataset.key];
       if (!seq) return;
-      const target = (window.innerWidth <= 860) ? activeTab : 'dos';
-      sendText(target, seq);
+      sendText(activeTab, seq);
     };
   });
 
