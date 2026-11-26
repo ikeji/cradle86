@@ -210,6 +210,31 @@
   termDos.open(document.getElementById('term-dos'));
   termMon.open(document.getElementById('term-mon'));
 
+  // Initial quick-start guide on DOS screen
+  termDos.writeln('\x1b[1;32mcradle86 Web Terminal\x1b[0m  (NEC V30 / 80C88 on Raspberry Pi Pico)');
+  termDos.writeln('------------------------------------------------------------------------');
+  termDos.writeln('\x1b[1m[1. 接続]\x1b[0m');
+  termDos.writeln('  Android Chrome : 上の \x1b[1;36m[USB接続 (3ポート同時)]\x1b[0m をタップして cradle86 を選択');
+  termDos.writeln('  PC Chrome/Edge : 以下の順で 4 ポートが現れるので、対応するボタンで選択:');
+  termDos.writeln('    1番目 (ttyACM0 / if00 / V30 Monitor)  -> \x1b[1;36m[Serial: Monitor]\x1b[0m');
+  termDos.writeln('    2番目 (ttyACM1 / if02 / DOS Console)  -> \x1b[1;36m[Serial: DOS]\x1b[0m');
+  termDos.writeln('    3番目 (ttyACM2 / if04 / DOS AUX)      -> (通常は未接続でOK)');
+  termDos.writeln('    4番目 (ttyACM3 / if06 / Virtual Disk) -> \x1b[1;36m[Serial: Disk B:]\x1b[0m (任意)');
+  termDos.writeln('');
+  termDos.writeln('\x1b[1m[2. 起動]\x1b[0m');
+  termDos.writeln('  \x1b[1;32m[▶ DOS起動 (h)]\x1b[0m を押すと MS-DOS 2.11 が起動します (日付/時刻も自動スキップ)。');
+  termDos.writeln('');
+  termDos.writeln('\x1b[1m[3. おすすめデモ]\x1b[0m');
+  termDos.writeln('  \x1b[1;33mSANITY\x1b[0m : CPU種別判別 (V30 / 80C88) + メモリ・ディスク診断');
+  termDos.writeln('  \x1b[1;33mMANDEL\x1b[0m : マンデルブロ集合描画 + 所要時間計測');
+  termDos.writeln('  \x1b[1;33mLIFE\x1b[0m   : ライフゲーム (グライダー銃)  [r:ランダム g:銃 q:終了]');
+  termDos.writeln('  \x1b[1;33mVI\x1b[0m     : テキストエディタ');
+  termDos.writeln('');
+  termDos.writeln('\x1b[1m[4. B:ドライブ (LSI C-86 試食版)]\x1b[0m');
+  termDos.writeln('  \x1b[1;36m[B: LHA+LSIC]\x1b[0m を押してから DOS 上で \x1b[1;33mB:ENV\x1b[0m を実行すると、');
+  termDos.writeln('  LHA255 と LSIC330C.LZH を自動展開して LCC が使えるようになります。');
+  termMon.writeln('\x1b[1;32mcradle86 Monitor (Port 0)\x1b[0m  - 接続後に ? でコマンド一覧、cpu でCPU確認');
+
   // Shift_JIS decoders (streaming)
   const decDos = new TextDecoder('shift_jis', { fatal: false });
   const decMon = new TextDecoder('utf-8', { fatal: false });
@@ -696,6 +721,7 @@
 
   // ---- Demo Macro Buttons ----
   document.getElementById('btn-start-dos').onclick = () => {
+    termDos.reset();
     sendText('mon', 'h\r');
     switchTab('dos');
     // Auto-skip MS-DOS date/time prompts after boot
