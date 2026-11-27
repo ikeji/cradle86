@@ -670,6 +670,14 @@ function define(o) {
 }
 define.num = 0;
 
+function defineMulti({ name, fn, output = DEFAULT }) {
+  if (!output) return;
+  const items = fn();
+  for (const item of items) {
+    CadObjects.push(item);
+  }
+}
+
 // Finder
 
 function addCombinator(fn) {
@@ -828,63 +836,221 @@ function range(n) {
 //   code(addCheckDigit(20)).move(5,5,0)
 // })  // }}}
 
+// ============================================================
+// ケース本体 (既存形状をそのまま維持)
+// ============================================================
+const CASE_H = 23;
+const CASE_W = 110;
+const LID_W = 101;
+
+function makeCase() {
+  const 外形高 = CASE_H;
+  const 外形寸法 = CASE_W;
+  const 外形 = box(外形寸法,外形寸法,外形高).move(-外形寸法/2,-外形寸法/2,0).fillet(12.5, atZ);
+  const 蓋寸法 = LID_W;
+  const 蓋 = box(蓋寸法, 蓋寸法+100,2).move(-蓋寸法/2,-蓋寸法/2,外形高-6).fillet(10, atZ);
+  const 開口寸法 = 蓋寸法;
+  const 開口 = box(開口寸法, 開口寸法+100, 5)
+    .move(-開口寸法/2, -開口寸法/2, 外形高-5)
+    .fillet(8, atZ)
+    .chamfer(4, f=>f.inPlane("XY", 外形高));
+  const 内側 = box(91,91,40).move(-91/2,-91/2,3);
+  const USB = box(20, 1000, 20).move(-10+30,30,3+1+1.6+3);
+  const トップノッチ = box(10, 5-0.5, 2).move(-5,蓋寸法/2,外形高-6);
+  const 基板台 =()=>cylinder(8, 2).move(0,0,3).cut(cylinder(2,2));
+  const 基板台群 = union([
+    基板台().move(-(90/2-5),-(90/2-5),0),
+    基板台().move( (90/2-5),-(90/2-5),0),
+    基板台().move( (90/2-5), (90/2-5),0),
+    基板台().move(-(90/2-5), (90/2-5),0),
+  ]);
+  const 基板固定突起部 = ()=>
+    box(2,10,10)
+    .move(45.5,-5,3);
+  const 突起長 = 6;
+  const 基板固定突起 = ()=>
+    box(1,10,突起長)
+    .move(0,0,-突起長)
+    .asymmetricChamfer(atX.and(inXY), inXY,3,突起長-1)
+    .move(0,0,突起長)
+    .union(
+      box(1,4,2)
+      .chamfer(0.99, atY.and(inYZ))
+      .move(-1,3,6-3)
+    )
+    .move(45.5,-5,3);
+  return 外形
+    .cut(蓋)
+    .cut(内側)
+    .cut(開口)
+    .union(基板台群)
+    .cut(USB)
+    .cut(基板固定突起部())
+    .union(基板固定突起())
+    .cut(基板固定突起部().mirrorX())
+    .union(基板固定突起().mirrorX())
+    .union(トップノッチ);
+}
+
+// ============================================================
+// スライド式蓋 (組み立て座標: Z = 17.05 .. 23.0)
+//  - 上部 4mm (Z=19..23): ケースの45°アリ溝(開口)にスライド嵌合
+//  - 下部 1.95mm (Z=17.05..19): 外周レール(トップノッチ部は逃がし)
+//  - 抜け止めディテント突起: トップノッチ(Y=50.5..55)の奥に0.28mm突起
+//  - CPU窓: U1 (DIP-40, 中心 X=-5.38, Y=+10.87) を大きく開口
+//  - USB切り込み: X=+20..+40, Y=+28..+55 を大きく切り欠き
+// ============================================================
+function makeLidAssembled() {
+  const CL = 0.35;          // 水平クリアランス (片側0.35mm -> 45°法線方向0.25mm)
+  const Z_BOT = 17.05;      // 蓋スロット底面(Z=17)から0.05mmクリアランス
+  const Z_MID = 19.0;       // 45°アリ溝の開始高さ
+  const Z_TOP = CASE_H;     // 23.0 (ケース上面と面一)
+  const Y_FRONT = 54.7;     // +Y側前端 (ケース外周Y=55から0.3mm控え)
+  const W = LID_W - 2 * CL; // 100.3mm
+
+  // 1) 上部45°アリ溝プレート (Z = 19 .. 23)
+  //    OpenCascadeのchamfer安定性のためZ=18..23で作ってからZ<19とY>Y_FRONTを切り落とす
+  const upperRaw = box(W, W + 100, 5)
+    .move(-W / 2, -W / 2, Z_TOP - 5)
+    .fillet(8.5, atZ)
+    .chamfer(4, f => f.inPlane("XY", Z_TOP));
+  const upper = upperRaw
+    .cut(box(200, 200, 10).move(-100, -100, Z_MID - 10))
+    .cut(box(200, 200, 20).move(-100, Y_FRONT, Z_MID - 5));
+
+  // 2) 下部外周レール (Z = 17.05 .. 19.0)
+  //    基板上部の空間を確保するため内側(X:-45.8..45.8, Y:-45.8..46.0)は抜く
+  const lowerOuter = box(W, W + 100, Z_MID - Z_BOT)
+    .move(-W / 2, -W / 2, Z_BOT)
+    .fillet(10.3, atZ)
+    .cut(box(200, 200, 10).move(-100, Y_FRONT, Z_BOT - 2));
+  const lowerInnerCut = box(91.6, 91.8, 10).move(-45.8, -45.8, Z_BOT - 2);
+  // トップノッチ(X:-5..+5, Y:50.5..55, Z:17..19)をスライド挿抜時に通過させる中央逃がし溝
+  // 前側(+Y)だけでなく後側(-Y)レールも抜いて全スライド区間で干渉をゼロにする
+  const notchPassCut = box(10.8, 130, 10).move(-5.4, -60, Z_BOT - 2);
+  const lower = lowerOuter.cut(lowerInnerCut).cut(notchPassCut);
+
+  // 3) トップノッチ奥の抜け止めディテント突起 (45°ランプ付き、0.28mm突出)
+  //    閉状態ではY=48.4..50.1 (トップノッチY=50.5の奥)に収まり干渉ゼロ。
+  //    開閉時は45°アリ溝の垂直遊び(0.35mm)を使って軽く乗り越える。
+  const detentH = 0.28;
+  const detentW = 8.0;
+  const detentShape = replicad.draw([48.4, Z_MID])
+    .lineTo([48.8, Z_MID - detentH])
+    .lineTo([49.7, Z_MID - detentH])
+    .lineTo([50.1, Z_MID])
+    .close()
+    .sketchOnPlane("YZ")
+    .extrude(detentW)
+    .translate(-detentW / 2, 0, 0);
+  const detent = new CadObjectM(detentShape);
+
+  // 4) CPU窓 (U1: DIP-40 中心 X=-5.38, Y=+10.87, 本体14.73x50.80, ソケット17.34x51.31)
+  const cpuCx = -5.38;
+  const cpuCy = 10.87;
+  const cpuWinW = 21.0;
+  const cpuWinL = 56.0;
+  const cpuWinCut = box(cpuWinW, cpuWinL, 12)
+    .move(cpuCx - cpuWinW / 2, cpuCy - cpuWinL / 2, Z_MID - 4)
+    .fillet(2.5, atZ);
+  // 窓下面(Z=19)に1mmの45°面取りを入れて見やすく＆印刷サポートレス
+  const cpuWinChamfer = box(cpuWinW + 2, cpuWinL + 2, 3)
+    .move(cpuCx - (cpuWinW + 2) / 2, cpuCy - (cpuWinL + 2) / 2, Z_MID - 2)
+    .fillet(3.5, atZ)
+    .chamfer(1.0, f => f.inPlane("XY", Z_MID + 1));
+
+  // 5) USB差し込み用切り込み (ケースのUSB開口 X=+20..+40 に揃え、Y=+28まで開放)
+  const usbCut = box(20.0, 40.0, 12)
+    .move(20.0, 28.0, Z_BOT - 2)
+    .fillet(3.0, atZ);
+
+  // 6) ケース外周(110x110, R=12.5)の角丸に合わせて+Y側コーナーを面一にトリム
+  const outerClip = box(CASE_W - 0.4, CASE_W - 0.4, 40)
+    .move(-(CASE_W - 0.4) / 2, -(CASE_W - 0.4) / 2, 0)
+    .fillet(12.3, atZ);
+
+  return upper
+    .union(lower)
+    .union(detent)
+    .cut(cpuWinCut)
+    .cut(cpuWinChamfer)
+    .cut(usbCut)
+    .intersect(outerClip);
+}
+
+// 印刷用向き: 天面(Z=23)をビルドプレート(Z=0)に密着させて完全サポートレス造形
+function makeLidPrint() {
+  return makeLidAssembled().rotateX(180).move(0, 0, CASE_H);
+}
+
+// 確認用PCBモデル (基板 + CPU U1 + Raspberry Pi Pico + Micro-USB)
+function makePcbWithParts() {
+  const pcb = box(90, 90, 1.6).move(-45, -45, 5.0);
+  // U1 (DIP-40 CPU, 中心 X=-5.38, Y=+10.87, ソケット込み高さ約9mm)
+  const cpu = box(15.2, 51.0, 9.0).move(-5.38 - 15.2 / 2, 10.87 - 51.0 / 2, 6.6);
+  // Raspberry Pi Pico (中心 X=+30.89, Y=-19.4..+31.6, ヘッダ込み高さ約11mm)
+  const pico = box(21.0, 51.0, 8.0).move(30.89 - 21.0 / 2, 31.6 - 51.0, 6.6);
+  const usbPort = box(7.5, 5.5, 3.0).move(30.89 - 7.5 / 2, 31.6 - 3.5, 14.6);
+  return pcb.union(cpu).union(pico).union(usbPort);
+}
+
 define({name: "case",  // {{{
-  fn: ()=> {
-    const 外形高 = 23
-    const 外形寸法 = 110
-    const 外形 = box(外形寸法,外形寸法,外形高).move(-外形寸法/2,-外形寸法/2,0).fillet(12.5, atZ);
-    const 蓋寸法 = 101
-    const 蓋 = box(蓋寸法, 蓋寸法+100,2).move(-蓋寸法/2,-蓋寸法/2,外形高-6).fillet(10, atZ);
-    const 開口寸法 = 蓋寸法;
-    const 開口 = box(開口寸法, 開口寸法+100, 5)
-      .move(-開口寸法/2, -開口寸法/2, 外形高-5)
-      .fillet(8, atZ)
-      .chamfer(4, f=>f.inPlane("XY", 外形高))
-    const 内側 = box(91,91,40).move(-91/2,-91/2,3)
-    const USB = box(20, 1000, 20).move(-10+30,30,3+1+1.6+3)
-    const トップノッチ = box(10, 5-0.5, 2).move(-5,蓋寸法/2,外形高-6)
-    const 基板台 =()=>cylinder(8, 2).move(0,0,3).cut(cylinder(2,2))
-    const 基板台群 = union([
-      基板台().move(-(90/2-5),-(90/2-5),0),
-      基板台().move( (90/2-5),-(90/2-5),0),
-      基板台().move( (90/2-5), (90/2-5),0),
-      基板台().move(-(90/2-5), (90/2-5),0),
-    ])
-    const 基板固定突起部 = ()=>
-      box(2,10,10)
-      .move(45.5,-5,3)
-    const 突起長 = 6
-    const 基板固定突起 = ()=>
-      box(1,10,突起長)
-      .move(0,0,-突起長)
-      .asymmetricChamfer(atX.and(inXY), inXY,3,突起長-1)
-      .move(0,0,突起長)
-      .union(
-        box(1,4,2)
-        .chamfer(0.99, atY.and(inYZ))
-        .move(-1,3,6-3)
-      )
-      .move(45.5,-5,3)
-    return 外形
-      .cut(蓋)
-      .cut(内側)
-      .cut(開口)
-      .union(基板台群)
-      .cut(USB)
-      .cut(基板固定突起部())
-      .union(基板固定突起())
-      .cut(基板固定突起部().mirrorX())
-      .union(基板固定突起().mirrorX())
-      .union(トップノッチ)
-  }
+  fn: ()=> makeCase()
+})  // }}}
+
+define({name: "lid",  // {{{
+  fn: ()=> makeLidPrint()
 })  // }}}
 
 define({name: "pcb",  // {{{
-  // output: false,
+  fn: ()=> makePcbWithParts()
+})  // }}}
+
+defineMulti({name: "all",  // {{{
   fn: ()=> {
-    const 外形 = box(90,90,1.5).move(-45,-45,3+2);
-    return 外形
+    // --- 自動検証 1: 単一ソリッド確認 ---
+    const lidSolids = makeLidAssembled().shape().solids.length;
+    if (lidSolids !== 1) {
+      console.log(`WARNING (lid solids): expected 1, got ${lidSolids}`);
+    }
+
+    // --- 自動検証 2: 閉状態でのケース＆蓋の干渉チェック ---
+    const closedOverlap = makeCase().intersect(makeLidAssembled()).shape().faces.length;
+    if (closedOverlap > 0) {
+      console.log(`WARNING (closed overlap): case & lid overlap faces=${closedOverlap}`);
+    }
+
+    // --- 自動検証 3: 基板＆部品と蓋の干渉チェック ---
+    const pcbOverlap = makePcbWithParts().intersect(makeLidAssembled()).shape().faces.length;
+    if (pcbOverlap > 0) {
+      console.log(`WARNING (pcb overlap): pcb & lid overlap faces=${pcbOverlap}`);
+    }
+
+    // --- 自動検証 4: スライド挿抜軌道スイープチェック (dy = 2..110mm) ---
+    // トップノッチ通過時(dy=0.5..6.5)は0.28mmディテントを乗り越えるためdz=+0.30mm持ち上がる
+    for (let dy = 2; dy <= 110; dy += 6) {
+      const dz = (dy <= 8) ? 0.30 : 0.0;
+      const slid = makeLidAssembled().move(0, dy, dz);
+      const nf = makeCase().intersect(slid).shape().faces.length;
+      if (nf > 0) {
+        console.log(`WARNING (slide sweep dy=${dy}, dz=${dz}): case & lid overlap faces=${nf}`);
+      }
+    }
+    console.log("CHECK complete: case + lid interference & slide sweep finished.");
+
+    return [
+      new CadObjectM(makeCase().shape(), "#5a626a", "case"),
+      new CadObjectM(makeLidAssembled().shape(), "#4a90d9", "lid"),
+      new CadObjectM(makePcbWithParts().shape(), "#2e7d32", "pcb"),
+    ];
   }
+})  // }}}
+
+defineMulti({name: "print_set",  // {{{
+  fn: ()=> [
+    new CadObjectM(makeCase().shape(), "#5a626a", "case"),
+    new CadObjectM(makeLidPrint().shape(), "#4a90d9", "lid").move(118, 0, 0),
+  ]
 })  // }}}
 
 // vim: set fdm=marker :
