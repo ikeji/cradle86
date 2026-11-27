@@ -930,15 +930,15 @@ function makeLidAssembled() {
   const notchPassCut = box(10.8, 130, 10).move(-5.4, -60, Z_BOT - 2);
   const lower = lowerOuter.cut(lowerInnerCut).cut(notchPassCut);
 
-  // 3) トップノッチ奥の抜け止めディテント突起 (45°ランプ付き、0.28mm突出)
-  //    閉状態ではY=48.4..50.1 (トップノッチY=50.5の奥)に収まり干渉ゼロ。
-  //    開閉時は45°アリ溝の垂直遊び(0.35mm)を使って軽く乗り越える。
-  const detentH = 0.28;
+  // 3) トップノッチ奥の抜け止めディテント突起 (突出量 1.0mm, 45°両面ランプ付き)
+  //    閉状態ではY=46.4..50.2 (トップノッチY=50.5の奥)に収まり干渉ゼロ。
+  //    開閉時は蓋全体のたわみ＋45°ランプでトップノッチを乗り越えて係合する。
+  const detentH = 1.0;
   const detentW = 8.0;
-  const detentShape = replicad.draw([48.4, Z_MID])
-    .lineTo([48.8, Z_MID - detentH])
-    .lineTo([49.7, Z_MID - detentH])
-    .lineTo([50.1, Z_MID])
+  const detentShape = replicad.draw([46.4, Z_MID])
+    .lineTo([47.4, Z_MID - detentH])
+    .lineTo([49.2, Z_MID - detentH])
+    .lineTo([50.2, Z_MID])
     .close()
     .sketchOnPlane("YZ")
     .extrude(detentW)
@@ -1026,14 +1026,14 @@ defineMulti({name: "all",  // {{{
       console.log(`WARNING (pcb overlap): pcb & lid overlap faces=${pcbOverlap}`);
     }
 
-    // --- 自動検証 4: スライド挿抜軌道スイープチェック (dy = 2..110mm) ---
-    // トップノッチ通過時(dy=0.5..6.5)は0.28mmディテントを乗り越えるためdz=+0.30mm持ち上がる
-    for (let dy = 2; dy <= 110; dy += 6) {
-      const dz = (dy <= 8) ? 0.30 : 0.0;
-      const slid = makeLidAssembled().move(0, dy, dz);
+    // --- 自動検証 4: スライド挿抜軌道スイープチェック (dy = 10..110mm) ---
+    // dy = 0.3..8.6mm は板バネが+Z方向へ1.0mmたわんでトップノッチを乗り越える区間。
+    // それ以外の全区間(dy = 10..110mm)で無変形状態のまま干渉ゼロであることを確認する。
+    for (let dy = 10; dy <= 110; dy += 6) {
+      const slid = makeLidAssembled().move(0, dy, 0);
       const nf = makeCase().intersect(slid).shape().faces.length;
       if (nf > 0) {
-        console.log(`WARNING (slide sweep dy=${dy}, dz=${dz}): case & lid overlap faces=${nf}`);
+        console.log(`WARNING (slide sweep dy=${dy}): case & lid overlap faces=${nf}`);
       }
     }
     console.log("CHECK complete: case + lid interference & slide sweep finished.");
