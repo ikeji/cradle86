@@ -63,6 +63,30 @@ set_source_files_properties(
 
 add_executable(v30_control main.cpp gpio_hidos.S usb_ports.c usb_descriptors.c)
 
+# Embed git revision into firmware version (v command & picotool info)
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_REV
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT GIT_REV)
+    set(GIT_REV "unknown")
+else()
+    execute_process(
+        COMMAND git diff-index --quiet HEAD -- .
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        RESULT_VARIABLE GIT_DIRTY
+        ERROR_QUIET
+    )
+    if(NOT GIT_DIRTY EQUAL 0)
+        set(GIT_REV "${GIT_REV}-dirty")
+    endif()
+endif()
+target_compile_definitions(v30_control PRIVATE GIT_REV="${GIT_REV}")
+pico_set_program_version(v30_control "${GIT_REV}")
+
 # Overclocking (c s <MHz>) needs a slower flash clock: sys clock / 4.
 pico_define_boot_stage2(v30_boot2 ${PICO_DEFAULT_BOOT_STAGE2_FILE})
 target_compile_definitions(v30_boot2 PRIVATE PICO_FLASH_SPI_CLKDIV=4)

@@ -21,6 +21,9 @@
 
 // --- Config ---
 #define VERSION_STR "0.0.1"
+#ifndef GIT_REV
+#define GIT_REV "unknown"
+#endif
 // V30 memory map in HIDOS mode: RAM at 00000h-RAM_SIZE, a 16-byte ROM at
 // FFFF0h (reset JMP + INT 86h handler), nothing elsewhere.
 // The logging modes (test programs) instead mirror the first LOG_RAM_SIZE
@@ -108,7 +111,7 @@ volatile ClockMode clock_mode = CLOCK_GPIO;
 // The HIDOS engine (gpio_hidos.S) makes each phase just that long. The C
 // engine (logging modes) adds them to its own time, so it is slower.
 #define GPIO_DEFAULT_ADDR_NS 72u
-#define GPIO_DEFAULT_LOW_NS 44u
+#define GPIO_DEFAULT_LOW_NS 52u
 #define GPIO_DEFAULT_HIGH_NS 40u
 #define GPIO_DEFAULT_8088_ADDR_NS 80u
 #define GPIO_DEFAULT_8088_LOW_NS 60u
@@ -2260,7 +2263,8 @@ int main() {
   apply_default_gpio_clock();
 
   char line[128], *argv[16];
-  printf("\n\n=== cradle86 Monitor v%s ===\nType '?' for help.\n", VERSION_STR);
+  printf("\n\n=== cradle86 Monitor v%s (%s) ===\nType '?' for help.\n",
+         VERSION_STR, GIT_REV);
 
   while (true) {
     printf("mon> ");
@@ -2633,8 +2637,8 @@ int main() {
         printf("No log data to send.\n");
       }
     } else if (strcmp(cmd, "v") == 0)
-      printf("Ver: %s, RAM: %dKB, CPU: %s\n", VERSION_STR, RAM_SIZE / 1024,
-             cpu_name_str());
+      printf("Ver: %s (%s, %s %s), RAM: %dKB, CPU: %s\n", VERSION_STR, GIT_REV,
+             __DATE__, __TIME__, RAM_SIZE / 1024, cpu_name_str());
     else if (strcmp(cmd, "autotest") == 0) {
       // Trim leading whitespace from args
       const char *args_ptr = args;

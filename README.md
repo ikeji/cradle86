@@ -19,7 +19,7 @@ RP2040 の Core 1 が CPU のアドレス／データバスを直接エミュレ
   - リセット直後の最初の T1 でデータバスを Hi-Z のまま Pin 28（V30=`M/IO#` HIGH / 80C88=`IO/M#` LOW）を読んで自動判別し、バス衝突ゼロで 16-bit / 8-bit エンジンと既定クロックを自動切替します。
 - **GPIO クロックエンジン（`monitor/gpio_hidos.S`）**
   - Core 1 がクロックを生成しながら T1〜T4 を処理する方式。
-  - 3.3V 実測: V30 約 **10.0 MHz**（既定 `c g 72 44 40`）、80C88 約 **7.2 MHz**（既定 `c g 80 60 60`、上限 8.7 MHz）。
+  - 3.3V 実測: V30 約 **9.6 MHz**（既定 `c g 72 52 40`）、80C88 約 **7.2 MHz**（既定 `c g 80 60 60`、上限 8.7 MHz）。
 - **ROM ディスク（A:）収録ソフト**
   - MS-DOS 2.11 標準コマンド（`COMMAND.COM`, `DEBUG.COM`, `CHKDSK.COM`, `EDLIN.COM` 等）
   - 開発ツール（`MASM.EXE`, `LINK.EXE`）
