@@ -13,15 +13,39 @@
 # tmux, it switches the client to the session instead.
 
 SESSION=v30
-DEV=${CRADLE_DEV:-/dev/serial/by-id/usb-cradle86_cradle86_V30_E6639436874A4C2B}
 HERE=$(cd "$(dirname "$0")" && pwd)
 
+# Find and wait for a cradle86 USB CDC interface (e.g. "if00").
+# Sets PORT to the resolved device path.
 wait_port() {
-  if [ ! -e "$1" ]; then
-    echo "--- waiting for $1"
-    until [ -e "$1" ]; do sleep 0.5; done
+  local ifname=$1
+  local label waited=0
+  local -a matches
+  if [ -n "$CRADLE_DEV" ]; then
+    label="$CRADLE_DEV-$ifname"
+  else
+    label="/dev/serial/by-id/usb-cradle86_*-$ifname"
   fi
-  echo "--- connected to $1"
+  while true; do
+    if [ -n "$CRADLE_DEV" ]; then
+      if [ -e "$CRADLE_DEV-$ifname" ]; then
+        PORT="$CRADLE_DEV-$ifname"
+        break
+      fi
+    else
+      matches=(/dev/serial/by-id/usb-cradle86_*-"$ifname")
+      if [ -e "${matches[0]}" ]; then
+        PORT="${matches[0]}"
+        break
+      fi
+    fi
+    if [ "$waited" -eq 0 ]; then
+      echo "--- waiting for $label"
+      waited=1
+    fi
+    sleep 0.5
+  done
+  echo "--- connected to $PORT"
 }
 
 # One pane's loop (run by tmux as "cradle.sh _pane NAME [ARG]").
@@ -29,16 +53,16 @@ pane() {
   while true; do
     case $1 in
     con)
-      wait_port "$DEV-if02"
-      luit -encoding SJIS -- picocom -q "$DEV-if02"
+      wait_port if02
+      luit -encoding SJIS -- picocom -q "$PORT"
       ;;
     mon)
-      wait_port "$DEV-if00"
-      picocom -q "$DEV-if00"
+      wait_port if00
+      picocom -q "$PORT"
       ;;
     disk)
-      wait_port "$DEV-if06"
-      python3 "$HERE/disk_server.py" --port "$DEV-if06" "$2"
+      wait_port if06
+      python3 "$HERE/disk_server.py" --port "$PORT" "$2"
       ;;
     esac
     echo "--- disconnected"
@@ -71,7 +95,11 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
     fi
     make -C "$HERE" b.img >/dev/null || exit 1
   fi
-  self=$(printf %q "$HERE/cradle.sh")
+  env_prefix=""
+  if [ -n "$CRADLE_DEV" ]; then
+    env_prefix="CRADLE_DEV=$(printf %q "$CRADLE_DEV") "
+  fi
+  self="${env_prefix}$(printf %q "$HERE/cradle.sh")"
   con=$(tmux new-session -d -P -F '#{pane_id}' -s "$SESSION" -n cradle86 \
     -x "$(tput cols)" -y "$(tput lines)" "$self _pane con")
   tmux set-option -t "$SESSION" mouse on
